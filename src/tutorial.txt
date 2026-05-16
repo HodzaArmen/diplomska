@@ -1,0 +1,883 @@
+The tutorial will be split into the following sections:
+
+Create a wallet
+Issue a credential into the wallet
+Request & verify the credential from the wallet
+With that, we are covering a regular digital ID use-case end-to-end using the walt.id API components:
+
+Issuer API
+Verifier API
+Wallet API
+The Credential
+For this tutorial, we will be issuing ourselves a University Degree Credential in the W3C credential format using a JWT signature.
+
+If you are curious to learn more about other types of credential formats, please go here.
+
+Example University Degree Credential
+{
+  // The contextual information required for data integrity and 1.api
+  "@context": [
+    "https://www.w3.org/2018/credentials/v1",
+    "https://www.w3.org/2018/credentials/examples/v1"
+  ],
+  "id": "http://example.gov/credentials/3732",
+  // The credential's unique identifier
+  "type": [
+    "VerifiableCredential",
+    "UniversityDegree"
+    // Specifies the kind of credential being issued
+  ],
+  "issuer": {
+    "id": "did:web:vc.transmute.world"
+    // The issuer's unique identifier (DID)
+  },
+  "issuanceDate": "2020-03-10T04:24:12.164Z",
+  // When the credential was issued
+  "credentialSubject": {
+    // Information about the credential's recipient and the degree earned
+    "id": "did:example:ebfeb1f712ebc6f1c276e12ec21",
+    "degree": {
+      "type": "BachelorDegree",
+      "name": "Bachelor of Science and Arts"
+    }
+  }
+}
+Setup
+To bring up the issuer, wallet and verifier API locally, we will be using our docker compose.
+
+Clone walt.id identity
+
+git clone https://github.com/walt-id/waltid-identity.git && cd waltid-identity
+Launch the services
+
+cd docker-compose && docker compose up
+Access APIs
+Issuer API - http://localhost:7002/
+Verifier API - http://localhost:7003/
+Wallet API - http://localhost:7001/
+Create a Wallet
+To create our wallet, we will use the walt.id wallet API. This API will be managed by the operator, which means that the wallet we create will be a custodial wallet. In a custodial wallet, the keys are controlled by the operator of the software, unlike in a non-custodial wallet where the user has full control over their keys.
+
+Create Wallet Account
+CURL
+API Reference
+
+Each created account receives a default "did:key" and private key (Ed25519).
+
+curl -X 'POST' \
+  'http://0.0.0.0:7001/wallet-api/auth/register' \
+  -H 'accept: */*' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "type": "email",
+  "name": "Test",
+  "email": "test@email.com",
+  "password": "test"
+}'
+Body Parameters
+
+{
+  "name": "string",
+  "email": "string",
+  "password": "string",
+  "type": "{type}"
+}
+name: string - The name of the user.
+email: string - The email of the user.
+password: string - The password of the user.
+type: string - The type of the user account. email or address (for web3 login).
+Login to Wallet Account
+CURL
+API Reference
+
+curl -X 'POST' \
+ 'http://0.0.0.0:7001/wallet-api/auth/login' \
+  -H 'accept: */*' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "type": "email",
+  "email": "test@email.com",
+  "password": "test"
+}'
+Body Parameters
+
+{
+  "type": "{type}",
+  "email": "string",
+  "password": "string"
+}
+type: string - The type of the user account. email or address (for web3 login).
+email: string - The email of the user.
+password: string - The password of the user.
+Example Response
+Now a session is automatically created for cookie-based authentication. For Bearer Token Authentication, the token returned must be provided in the header for each request that needs authentication. Refer to the overview section for more details.
+
+{
+  "token": "KL-a_dk1qO8moCX4gxaGfb7_TS8RK-JWVKZk9BBP0-s",
+  "id": "018045e5-942c-4362-b535-658c4dd581ef",
+  "username": "user@email.com"
+}
+Retrieve Wallet ID
+As there could be support for multiple wallets per account in the future. We will need to retrieve our wallet ID for the one wallet that got created with the following call. We should save this ID for future reference.
+
+CURL
+API Reference
+
+curl -X 'GET' \
+  'http://0.0.0.0:7001/wallet-api/wallet/accounts/wallets' \
+  -H 'accept: application/json' \
+  -H 'authorization: Bearer {token}'
+Header Parameters
+
+authorization: String - Bearer token obtained from the login step. Format: Bearer {token}.
+Example Response
+
+{
+  "account": "108753e3-5ab4-4096-8699-ad0653c79a09",
+  "wallets": [
+    {
+      // ⬇️ Save for later ⬇️ 
+      "id": "4d7ef7c6-a76b-409b-b042-68d15a484082",
+      // ⬆️ Save for later ⬆️
+      "name": "Wallet of Test",
+      "createdOn": "2025-04-16T09:19:11.585Z",
+      "addedOn": "2025-04-16T09:19:11.597Z",
+      "permission": "ADMINISTRATE"
+    }
+  ]
+}
+Make sure to save the ID for future reference.
+
+Now that we have created the wallet account and have the wallet ID, we can proceed to the issuer to create a credential offer. This offer can then be received in the wallet we just set up. Additionally, it's important to note that each wallet is automatically assigned a set of keys and a did:jwk. This feature can be disabled if desired through the wallet configuration settings.
+
+Issue Credential
+Create Credential Offer
+CURL
+**Endpoint: ** /openid4vc/jwt/issue | API Reference
+
+Example Request
+
+curl -X 'POST' \
+  'http://localhost:7002/openid4vc/jwt/issue' \
+  -H 'accept: text/plain' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "issuerKey": {
+    "type": "jwk",
+    "jwk": {
+      "kty": "OKP",
+      "d": "JvJIpga2GD8LJeRu4Sv-mL4thE31DuFlr9PA04CIoZY",
+      "crv": "Ed25519",
+      "kid": "iJMS5bkZVIlncfq_Lf_SuxJ2JtQ5Hvaz7tWPnAjUUds",
+      "x": "FZdvwC8aGhRwqzWptej0NZgtwYAI1SyFg1mKDETOfqE"
+    }
+  },
+  "issuerDid": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoiaUpNUzVia1pWSWxuY2ZxX0xmX1N1eEoySnRRNUh2YXo3dFdQbkFqVVVkcyIsIngiOiJGWmR2d0M4YUdoUndxeldwdGVqME5aZ3R3WUFJMVN5RmcxbUtERVRPZnFFIn0",
+  "credentialConfigurationId": "UniversityDegree_jwt_vc_json",
+  "credentialData": {
+    "@context": [
+      "https://www.w3.org/2018/credentials/v1",
+      "https://www.w3.org/2018/credentials/examples/v1"
+    ],
+    "id": "http://example.gov/credentials/3732",
+    "type": [
+      "VerifiableCredential",
+      "UniversityDegree"
+    ],
+    "issuer": {
+      "id": "did:web:vc.transmute.world"
+    },
+    "issuanceDate": "2020-03-10T04:24:12.164Z",
+    "credentialSubject": {
+      "id": "did:example:ebfeb1f712ebc6f1c276e12ec21",
+      "degree": {
+        "type": "BachelorDegree",
+        "name": "Bachelor of Science and Arts"
+      }
+    }
+  },
+  "mapping": {
+    "id": "<uuid>",
+    "issuer": {
+      "id": "<issuerDid>"
+    },
+    "credentialSubject": {
+      "id": "<subjectDid>"
+    },
+    "issuanceDate": "<timestamp>",
+    "expirationDate": "<timestamp-in:365d>"
+  },
+  "authenticationMethod": "PRE_AUTHORIZED",
+  "standardVersion": "DRAFT13"
+}'
+Header Parameters
+
+statusCallbackUri: URL - Receive updates on the created issuance process, e.g. when a credential was successfully claimed. The parameter expects a URL which can accept a JSON POST request. The URL can also hold a $id, which will be replaced by the issuance session id. For example: https://myurl.com/$id, https://myurl.com or https://myurl.com/test/$id
+
+Expand To Learn More
+Body
+
+{
+  "issuerKey": {
+    "type": "jwk",
+    "jwk": {
+      "kty": "OKP",
+      "d": "JvJIpga2GD8LJeRu4Sv-mL4thE31DuFlr9PA04CIoZY",
+      "crv": "Ed25519",
+      "kid": "iJMS5bkZVIlncfq_Lf_SuxJ2JtQ5Hvaz7tWPnAjUUds",
+      "x": "FZdvwC8aGhRwqzWptej0NZgtwYAI1SyFg1mKDETOfqE"
+    }
+  },
+  "issuerDid": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoiaUpNUzVia1pWSWxuY2ZxX0xmX1N1eEoySnRRNUh2YXo3dFdQbkFqVVVkcyIsIngiOiJGWmR2d0M4YUdoUndxeldwdGVqME5aZ3R3WUFJMVN5RmcxbUtERVRPZnFFIn0",
+  "credentialConfigurationId": "UniversityDegree_jwt_vc_json",
+  "credentialData": {
+    "@context": [
+      "https://www.w3.org/2018/credentials/v1",
+      "https://www.w3.org/2018/credentials/examples/v1"
+    ],
+    "id": "http://example.gov/credentials/3732",
+    "type": [
+      "VerifiableCredential",
+      "UniversityDegree"
+    ],
+    "issuer": {
+      "id": "did:web:vc.transmute.world"
+    },
+    "issuanceDate": "2020-03-10T04:24:12.164Z",
+    "credentialSubject": {
+      "id": "did:example:ebfeb1f712ebc6f1c276e12ec21",
+      "degree": {
+        "type": "BachelorDegree",
+        "name": "Bachelor of Science and Arts"
+      }
+    }
+  },
+  "mapping": {
+    "id": "<uuid>",
+    "issuer": {
+      "id": "<issuerDid>"
+    },
+    "credentialSubject": {
+      "id": "<subjectDid>"
+    },
+    "issuanceDate": "<timestamp>",
+    "expirationDate": "<timestamp-in:365d>"
+  },
+  "authenticationMethod": "PRE_AUTHORIZED",
+  "standardVersion": "DRAFT13"
+}
+Body Parameters
+
+issuerKey: JSON - A JWK or reference object to a key stored in an external KMS to sign the credential with. Supported algorithms: ed25519, secp256k1, secp256r1, or RSA.
+JWK Format: {"type": "jwk", "jwk": Here JSON Web Key Object}. Must be provided as JWK object to "issuerKey".
+KMS Key: Please refer to the Key Management Section and the KMS you want to use for more details on the structure of the reference object.
+issuerDid: String - The DID related to the provided key.
+credentialConfigurationId: String - Reference to a specific credential configuration the issuer supports. As our issuer currently supports W3C JWT & SD-JWT credentials and SD-JWT VCs (IETF). The structure of the credentialConfigurationId is the following: " credentialType_jwt_vc_json" for W3C JWT & SD-JWT credentials and "credentialType_vc+sd-jwt" for SD-JWT VCs (IETF). E.g. "UniversityDegree_jwt_vc_json" or " UniversityDegree_vc+sd-jwt". You can also view the credentialConfigurationIds by visiting the /.well-known/openid-credential-issuer endpoint of your issuer. The metadata of our deployed issuer for testing can be seen here.
+credentialData: JSON - A credential data structure to sign (W3C compliant). A list of predefined valid structures can be found here.
+mapping (optional): JSON - The mapping object that allows for dynamic value insertion via data functions, executed at the time when the credentials is claimed. This feature enables personalized credentials based on real-time data. Learn more about it and see a list of supported data functions here.
+standardVersion: (optional) String - Defines which OIDC4VCI standard version is used. The supported standard versions are: DRAFT13 and DRAFT11. If no value is provided, it will default to DRAFT13.
+authenticationMethod: (optional) String - Defines which OIDC4VC exchange flow is used (pre-auth or full-auth). If no value is provided, it will default to pre-auth flow indicated as PRE_AUTHORIZED. The parameter options are:
+Expand To Learn More About The Options
+Example Response
+
+The issuer endpoint will respond with Credential Offer URL.
+
+Plain Response
+
+openid-credential-offer://issuer.portal.walt.id/?credential_offer=%7B%22credential_issuer%22%3A%22https%3A%2F%2Fissuer.portal.walt.id%22%2C%22credentials%22%3A%5B%7B%22format%22%3A%22jwt_vc_json%22%2C%22types%22%3A%5B%22VerifiableCredential%22%2C%22UniversityDegree%22%5D%2C%22credential_definition%22%3A%7B%22%40context%22%3A%5B%22https%3A%2F%2Fwww.w3.org%2F2018%2Fcredentials%2Fv1%22%2C%22https%3A%2F%2Fwww.w3.org%2F2018%2Fcredentials%2Fexamples%2Fv1%22%5D%2C%22types%22%3A%5B%22VerifiableCredential%22%2C%22UniversityDegree%22%5D%7D%7D%5D%2C%22grants%22%3A%7B%22authorization_code%22%3A%7B%22issuer_state%22%3A%220431b78c-cd94-4f50-bfdf-e24d436c0cf6%22%7D%2C%22urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Apre-authorized_code%22%3A%7B%22pre-authorized_code%22%3A%22eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiIwNDMxYjc4Yy1jZDk0LTRmNTAtYmZkZi1lMjRkNDM2YzBjZjYiLCJpc3MiOiJodHRwczovL2lzc3Vlci5wb3J0YWwud2FsdC5pZCIsImF1ZCI6IlRPS0VOIn0.NorG7GtjmA-HXMJfUzU9vfnshcIgFY0oYQb8qJjDfORPoNxuurgySSOIDKFi7Z4XJmC-oJZnM0Nbb0NUd57cDA%22%2C%22user_pin_required%22%3Afalse%7D%7D%7D
+Decoded
+
+openid-credential-offer://issuer.portal.walt.id/?
+credential_offer=
+{
+  "credential_issuer": "https://issuer.demo.walt.id",
+  "credentials": [
+    {
+      "format": "jwt_vc_json",
+      "types": [
+        "VerifiableCredential", 
+        "UniversityDegree"
+      ],
+      "credential_definition": {
+        "@context": [
+          "https://www.w3.org/2018/credentials/v1", 
+          "https://www.w3.org/2018/credentials/examples/v1"
+        ],
+        "types": [
+          "VerifiableCredential", 
+          "UniversityDegree"
+        ]
+      }
+    }
+  ],
+  "grants": {
+    "authorization_code": {
+      "issuer_state": "0431b78c-cd94-4f50-bfdf-e24d436c0cf6"
+    },
+    "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
+      "pre-authorized_code": "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiIwNDMxYjc4Yy1jZDk0LTRmNTAtYmZkZi1lMjRkNDM2YzBjZjYiLCJpc3MiOiJodHRwczovL2lzc3Vlci5wb3J0YWwud2FsdC5pZCIsImF1ZCI6IlRPS0VOIn0.NorG7GtjmA-HXMJfUzU9vfnshcIgFY0oYQb8qJjDfORPoNxuurgySSOIDKFi7Z4XJmC-oJZnM0Nbb0NUd57cDA",
+      "user_pin_required": false
+    }
+  }
+}
+The response will get from the issuer API will be an OIDCVI offer URL. This URL can then be passed to the wallet to claim the credentials.
+
+Receive Credential in Wallet
+CURL
+**Example Call ** | Api Reference
+
+curl -X 'POST' \
+  'http://0.0.0.0:7001/wallet-api/wallet/{walletID}/exchange/useOfferRequest' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H 'authorization: Bearer {loginToken}' \
+  -d '{credentialOfferFromIssuer}'
+Path Parameters
+
+walletID: String - the ID of our wallet, retrieved previously. Provided as part of the URL path.
+Header Parameters
+
+authorization: String - Bearer token obtained from the login step. Format: Bearer {loginToken}.
+Body
+
+credentialOfferFromIssuerAPI
+When you are using the terminal the credentialOffer return from the issuer might have a % at the end of it. Make sure to remove this before passing it to the wallet.
+
+
+Example Response
+
+[
+  {
+    "wallet": "8abd7a5f-ae86-46e5-9693-1bb8a98f7c5d",
+    "id": "urn:uuid:d730bc77-8a9b-4f9b-8d56-50689aefe3d7",
+    "document": "eyJraWQiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaWFVcE5VelZpYTFwV1NXeHVZMlp4WDB4bVgxTjFlRW95U25SUk5VaDJZWG8zZEZkUWJrRnFWVlZrY3lJc0luZ2lPaUpHV21SMmQwTTRZVWRvVW5keGVsZHdkR1ZxTUU1YVozUjNXVUZKTVZONVJtY3hiVXRFUlZSUFpuRkZJbjAjaUpNUzVia1pWSWxuY2ZxX0xmX1N1eEoySnRRNUh2YXo3dFdQbkFqVVVkcyIsInR5cCI6IkpXVCIsImFsZyI6IkVkRFNBIn0.eyJpc3MiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaWFVcE5VelZpYTFwV1NXeHVZMlp4WDB4bVgxTjFlRW95U25SUk5VaDJZWG8zZEZkUWJrRnFWVlZrY3lJc0luZ2lPaUpHV21SMmQwTTRZVWRvVW5keGVsZHdkR1ZxTUU1YVozUjNXVUZKTVZONVJtY3hiVXRFUlZSUFpuRkZJbjAiLCJzdWIiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaVNtTXlWWHByY1RWRU5uaHJRbXAyWlRGVk5tRlJibU4yUzJkdFVrNTFTVU50Y1ZGTmIzVlFXVFJ5WXlJc0luZ2lPaUpFZEVoalgyTmZVSGgyY3pkb2NYRkRXRVZJTjIxWlRYSkZjWGgwY25jeVZWZGlRemhRYjA1WVRVMVJJbjAiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvMjAxOC9jcmVkZW50aWFscy92MSIsImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL2V4YW1wbGVzL3YxIl0sImlkIjoidXJuOnV1aWQ6ZDczMGJjNzctOGE5Yi00ZjliLThkNTYtNTA2ODlhZWZlM2Q3IiwidHlwZSI6WyJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsIlVuaXZlcnNpdHlEZWdyZWUiXSwiaXNzdWVyIjp7ImlkIjoiZGlkOmp3azpleUpyZEhraU9pSlBTMUFpTENKamNuWWlPaUpGWkRJMU5URTVJaXdpYTJsa0lqb2lhVXBOVXpWaWExcFdTV3h1WTJaeFgweG1YMU4xZUVveVNuUlJOVWgyWVhvM2RGZFFia0ZxVlZWa2N5SXNJbmdpT2lKR1dtUjJkME00WVVkb1VuZHhlbGR3ZEdWcU1FNWFaM1IzV1VGSk1WTjVSbWN4YlV0RVJWUlBabkZGSW4wIn0sImlzc3VhbmNlRGF0ZSI6IjIwMjUtMDQtMTZUMTI6MDg6MzEuOTMwOTQ0MDg1WiIsImNyZWRlbnRpYWxTdWJqZWN0Ijp7ImlkIjoiZGlkOmp3azpleUpyZEhraU9pSlBTMUFpTENKamNuWWlPaUpGWkRJMU5URTVJaXdpYTJsa0lqb2lTbU15VlhwcmNUVkVObmhyUW1wMlpURlZObUZSYm1OMlMyZHRVazUxU1VOdGNWRk5iM1ZRV1RSeVl5SXNJbmdpT2lKRWRFaGpYMk5mVUhoMmN6ZG9jWEZEV0VWSU4yMVpUWEpGY1hoMGNuY3lWVmRpUXpoUWIwNVlUVTFSSW4wIiwiZGVncmVlIjp7InR5cGUiOiJCYWNoZWxvckRlZ3JlZSIsIm5hbWUiOiJCYWNoZWxvciBvZiBTY2llbmNlIGFuZCBBcnRzIn19LCJleHBpcmF0aW9uRGF0ZSI6IjIwMjYtMDQtMTZUMTI6MDg6MzEuOTMxMjU1NjY4WiJ9LCJqdGkiOiJ1cm46dXVpZDpkNzMwYmM3Ny04YTliLTRmOWItOGQ1Ni01MDY4OWFlZmUzZDciLCJleHAiOjE3NzYzNDEzMTEsImlhdCI6MTc0NDgwNTMxMSwibmJmIjoxNzQ0ODA1MzExfQ.tjhXghX6WtMYm0R31cULd0aKVrqRRFkINI-KEjYsDeyoALxl833dEdESosLKUm197Yh8WK5QmX0jMc-gyvnnCw",
+    "disclosures": "",
+    "addedOn": "2025-04-16T12:08:32.036587543Z",
+    "pending": false,
+    "format": "jwt_vc_json",
+    "parsedDocument": {
+      "@context": [
+        "https://www.w3.org/2018/credentials/v1",
+        "https://www.w3.org/2018/credentials/examples/v1"
+      ],
+      "id": "urn:uuid:d730bc77-8a9b-4f9b-8d56-50689aefe3d7",
+      "type": [
+        "VerifiableCredential",
+        "UniversityDegree"
+      ],
+      "issuer": {
+        "id": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoiaUpNUzVia1pWSWxuY2ZxX0xmX1N1eEoySnRRNUh2YXo3dFdQbkFqVVVkcyIsIngiOiJGWmR2d0M4YUdoUndxeldwdGVqME5aZ3R3WUFJMVN5RmcxbUtERVRPZnFFIn0"
+      },
+      "issuanceDate": "2025-04-16T12:08:31.930944085Z",
+      "credentialSubject": {
+        "id": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoiSmMyVXprcTVENnhrQmp2ZTFVNmFRbmN2S2dtUk51SUNtcVFNb3VQWTRyYyIsIngiOiJEdEhjX2NfUHh2czdocXFDWEVIN21ZTXJFcXh0cncyVVdiQzhQb05YTU1RIn0",
+        "degree": {
+          "type": "BachelorDegree",
+          "name": "Bachelor of Science and Arts"
+        }
+      },
+      "expirationDate": "2026-04-16T12:08:31.931255668Z"
+    }
+  }
+]
+Request & Verify Credential
+In the next section, we will be using the walt.id verifier API to generate an OID4VP authorization request. This request we will then pass to the wallet to present the credential we received and stored in the previous step.
+
+Create Authorization Request
+Below, we will outline the specific credentials and the format we wish to request from a wallet. In our example, we will be requesting a UniversityDegree in the W3C Verifiable Credential (VC) format (jwt_vc_json). The Verifier API will take the incoming request and convert it into a Presentation Definition which becomes part of the returned Authorization request. The Authorization request with the presentation definition allows the wallet to understand which credentials it needs to present to the verifier.
+
+CURL
+curl -X 'POST' \
+  'http://0.0.0.0:7003/openid4vc/verify' \
+  -H 'accept: */*' \
+  -H 'authorizeBaseUrl: openid4vp://authorize' \
+  -H 'responseMode: direct_post' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "request_credentials": [
+    { "type": "UniversityDegree", "format": "jwt_vc_json" }
+  ]
+}'
+Header Parameters
+
+authorizeBaseUrl - is used to modify the start of the OID4VC request URL. If you are using the cross-device flow, where you will display the URL as a QR code, you can leave the value as openid4vp://authorize or if you don't know the wallet the user will be using to claim the credential. If you are using the same device flow, where you already know the user's wallet and want the user to be able to go directly to it, you can use the wallet URL path that is able to receive an OIDC request as a query parameter. Our wallet for example can receive OID4VC requests here https://wallet.demo.walt.id/wallet-api/wallet/{wallet}/exchange/useOfferRequest.
+responseMode - should be direct_post as the other options are not yet supported.
+successRedirectUri (optional) - is used to redirect the user if verification is successful. You can use the $id placeholder to get access to the id of verification session in your application in order to retrieve the verification results. E.g. /success?id=$id will be replaced with /success?id=1234567890
+errorRedirectUri (optional) - is used to redirect the user if verification is unsuccessful. You can use the $id placeholder to get access to the id of verification session in your application in order to retrieve the verification results. E.g. /error?id=$id will be replaced with /error?id=1234567890
+statusCallbackUri (optional) - URL that should be called when the presentation request has been fulfilled by a wallet. The request sent will be a POST including the whole presentation result. See Verification Status Policies Response
+statusCallbackApiKey (optional) - If the endpoint you provide via statusCallbackUri is protected, you can use the statusCallbackApiKey to authenticate. The provided key will be appended as Authorization Header to the request.
+stateId (optional) - overwrite the unique state value which gets created for each verification request with your own.
+openId4VPProfile (optional) - Define profile for VP (Verifiable Presentation) request. The default is W3C OpenID4VP, which can optionally provided as DEFAULT. Apart from that, you can choose from the following options:
+EBSIV3: For EBSI V3 compliant VP. Learn more here.
+ISO_18013_7_MDOC: For mdoc Openid4VP.
+Body
+
+{
+  "request_credentials": [
+    {
+      "type": "UniversityDegree",
+      "format": "jwt_vc_json"
+    }
+  ]
+}
+Body Parameters
+
+request_credentials - An array of objects detailing the credentials to be requested from the user. Each object varies based on the type of credential being requested.
+Expand To Learn More
+Example Response
+
+Raw Response
+
+openid4vp://authorize?response_type=vp_token&client_id=http%3A%2F%2Fhost.docker.internal%3A7003%2Fopenid4vc%2Fverify&response_mode=direct_post&state=5smqTtxA1L0F&presentation_definition_uri=http%3A%2F%2Fhost.docker.internal%3A7003%2Fopenid4vc%2Fpd%2F5smqTtxA1L0F&client_id_scheme=redirect_uri&client_metadata=%7B%22authorization_encrypted_response_alg%22%3A%22ECDH-ES%22%2C%22authorization_encrypted_response_enc%22%3A%22A256GCM%22%7D&nonce=2afa2fdc-b8ab-4d4c-a4b6-bd299949fb4b&response_uri=http%3A%2F%2Fhost.docker.internal%3A7003%2Fopenid4vc%2Fverify%2F5smqTtxA1L0F
+Decoded Response
+
+openid4vp://authorize?
+response_type=vp_token
+&client_id=http://host.docker.internal:7003/openid4vc/verify
+&response_mode=direct_post
+&state=5smqTtxA1L0F
+&presentation_definition_uri=http://host.docker.internal:7003/openid4vc/pd/5smqTtxA1L0F
+&client_id_scheme=redirect_uri
+&client_metadata={
+  "authorization_encrypted_response_alg":"ECDH-ES",
+  "authorization_encrypted_response_enc":"A256GCM"
+}
+&nonce=2afa2fdc-b8ab-4d4c-a4b6-bd299949fb4b
+&response_uri=http://host.docker.internal:7003/openid4vc/verify/5smqTtxA1L0F
+Presentation Definition URI result
+
+Below we see the presentation definition the verifier API has generated based on our request. This helps the wallet find matching credentials to present.
+
+{
+  "id": "EjRyJNiWqKcc",
+  "input_descriptors": [
+    {
+      "id": "UniversityDegree",
+      "format": {
+        "jwt_vc_json": {
+          "alg": [
+            "EdDSA"
+          ]
+        }
+      },
+      "constraints": {
+        "fields": [
+          {
+            "path": [
+              "$.vc.type"
+            ],
+            "filter": {
+              "type": "string",
+              "pattern": "UniversityDegree"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+Present Credential
+1. Extract Presentation Definition
+First, we will need to decode the Authorization Request we got from the verifier.
+
+Example Authorization Request
+
+openid4vp://authorize?response_type=vp_token&client_id=http%3A%2F%2Fhost.docker.internal%3A7003%2Fopenid4vc%2Fverify&response_mode=direct_post&state=5smqTtxA1L0F&presentation_definition_uri=http%3A%2F%2Fhost.docker.internal%3A7003%2Fopenid4vc%2Fpd%2F5smqTtxA1L0F&client_id_scheme=redirect_uri&client_metadata=%7B%22authorization_encrypted_response_alg%22%3A%22ECDH-ES%22%2C%22authorization_encrypted_response_enc%22%3A%22A256GCM%22%7D&nonce=2afa2fdc-b8ab-4d4c-a4b6-bd299949fb4b&response_uri=http%3A%2F%2Fhost.docker.internal%3A7003%2Fopenid4vc%2Fverify%2F5smqTtxA1L0F
+For the decoding we can use an online tool like this.
+
+Example of Decoded Authorization Request
+
+openid4vp://authorize?
+response_type=vp_token
+&client_id=http://host.docker.internal:7003/openid4vc/verify
+&response_mode=direct_post
+&state=5smqTtxA1L0F
+&presentation_definition_uri=http://host.docker.internal:7003/openid4vc/pd/5smqTtxA1L0F
+&client_id_scheme=redirect_uri
+&client_metadata={
+  "authorization_encrypted_response_alg":"ECDH-ES",
+  "authorization_encrypted_response_enc":"A256GCM"
+}
+&nonce=2afa2fdc-b8ab-4d4c-a4b6-bd299949fb4b
+&response_uri=http://host.docker.internal:7003/openid4vc/verify/5smqTtxA1L0F
+Now we need to visit the presentation_definition_uri provided and extract the presentation definition.
+
+Example Presentation Definition
+
+{
+  "id": "EjRyJNiWqKcc",
+  "input_descriptors": [
+    {
+      "id": "UniversityDegree",
+      "format": {
+        "jwt_vc_json": {
+          "alg": [
+            "EdDSA"
+          ]
+        }
+      },
+      "constraints": {
+        "fields": [
+          {
+            "path": [
+              "$.vc.type"
+            ],
+            "filter": {
+              "type": "string",
+              "pattern": "UniversityDegree"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+2. Find Credential(s) Matching Presentation Definition
+Use the matchCredentialsForPresentationDefinition endpoint in the wallet API to find all user credentials matching the presentation request constraints.
+
+CURL
+Endpoint:/wallet-api/wallet/{wallet}/exchange/matchCredentialsForPresentationDefinition| API Reference
+
+Example Request
+
+curl -X 'POST' \
+  'http://0.0.0.0:7001/wallet-api/wallet/{wallet_id}/exchange/matchCredentialsForPresentationDefinition' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H 'authorization: Bearer {loginToken}' \
+  -d '{presentationDefinitionExtractedFromAuthorizationRequest}'
+Path Parameters
+
+wallet_id - Use the saved wallet ID from earlier or extract it via the /wallet-api/wallet/accounts/wallets endpoint as explained here. Provided as part of the URL path.
+Header Parameters
+
+authorization: String - Bearer token obtained from the login step. Format: Bearer {loginToken}.
+Body
+
+The extracted presentation definition as JSON, as explained above.
+
+{
+  "id": "EjRyJNiWqKcc",
+  "input_descriptors": [
+    {
+      "id": "UniversityDegree",
+      "format": {
+        "jwt_vc_json": {
+          "alg": [
+            "EdDSA"
+          ]
+        }
+      },
+      "constraints": {
+        "fields": [
+          {
+            "path": [
+              "$.vc.type"
+            ],
+            "filter": {
+              "type": "string",
+              "pattern": "UniversityDegree"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+Example Response
+
+If credentials matching the presentation definition are found, a list of these credentials will be returned. If no match is found, an empty list will be returned. Take a note of the credential id(s) returned as we will be needing them in a later step.
+
+[
+  {
+    "wallet": "5f2eb7d7-7d04-461c-b93d-28d95efbf15b",
+    // ⬇️ Note for later ⬇️
+    "id": "urn:uuid:fb09ba3d-b73d-49ad-9d88-3d018878ea83",
+    // ⬆️ Note for later ⬆️
+    "document": "eyJraWQiOiJkaWQ6andrOmV5SnJkSGtpT2lKRlF5SXNJbU55ZGlJNklsQXRNalUySWl3aWEybGtJam9pTTFsT1pEbEdibmc1U214NVVGWlpkMmRYUmtVek4wVXpSM2RKTUdWSGJFTkxPSGRHYkZkNFIyWndUU0lzSW5naU9pSkdiM1paTWpGTVFVRlBWR3huTFcwdFRtVkxWMmhhUlV3MVlVWnlibEl3ZFdOS2FrUTFWRXR3UjNWbklpd2llU0k2SWtOeVJrcG1SMVJrVURJNVNrcGpZM0JSV0hWNVRVOHpiMmgwZW5KVWNWQjZRbEJDU1ZSWmFqQnZaMEVpZlEiLCJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJkaWQ6andrOmV5SnJkSGtpT2lKRlF5SXNJbU55ZGlJNklsQXRNalUySWl3aWEybGtJam9pTTFsT1pEbEdibmc1U214NVVGWlpkMmRYUmtVek4wVXpSM2RKTUdWSGJFTkxPSGRHYkZkNFIyWndUU0lzSW5naU9pSkdiM1paTWpGTVFVRlBWR3huTFcwdFRtVkxWMmhhUlV3MVlVWnlibEl3ZFdOS2FrUTFWRXR3UjNWbklpd2llU0k2SWtOeVJrcG1SMVJrVURJNVNrcGpZM0JSV0hWNVRVOHpiMmgwZW5KVWNWQjZRbEJDU1ZSWmFqQnZaMEVpZlEiLCJzdWIiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaVEyVTVNbGczUVhVMVRuQlRWV0ZoWlU5VFl6TkpSMjlDTFVacFNUTmtaMjFYT1Y5c2NGTldja3hrYXlJc0luZ2lPaUpIY1VabWRqbFNjemh1TlRrMk4wSXlVR3g0TW1wbFduRnlOWFZxVkRoM2RYWk5XbEpIYlZoeGVFSkZJbjAiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvMjAxOC9jcmVkZW50aWFscy92MSJdLCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiVmVyaWZpYWJsZUF0dGVzdGF0aW9uIiwiVmVyaWZpYWJsZUlkIl0sImNyZWRlbnRpYWxTY2hlbWEiOnsiaWQiOiJodHRwczovL2FwaS5wcmVwcm9kLmVic2kuZXUvdHJ1c3RlZC1zY2hlbWFzLXJlZ2lzdHJ5L3YxL3NjaGVtYXMvMHhiNzdmODUxNmE5NjU2MzFiNGYxOTdhZDU0YzY1YTllMmY5OTM2ZWJmYjc2YmFlNDkwNmQzMzc0NGRiY2M2MGJhIiwidHlwZSI6IkZ1bGxKc29uU2NoZW1hVmFsaWRhdG9yMjAyMSJ9LCJjcmVkZW50aWFsU3ViamVjdCI6eyJjdXJyZW50QWRkcmVzcyI6WyIxIEJvdWxldmFyZCBkZSBsYSBMaWJlcnTDqSwgNTk4MDAgTGlsbGUiXSwiZGF0ZU9mQmlydGgiOiIxOTkzLTA0LTA4IiwiZmFtaWx5TmFtZSI6IkRPRSIsImZpcnN0TmFtZSI6IkphbmUiLCJnZW5kZXIiOiJGRU1BTEUiLCJpZCI6ImRpZDpqd2s6ZXlKcmRIa2lPaUpQUzFBaUxDSmpjbllpT2lKRlpESTFOVEU1SWl3aWEybGtJam9pUTJVNU1sZzNRWFUxVG5CVFZXRmhaVTlUWXpOSlIyOUNMVVpwU1ROa1oyMVhPVjlzY0ZOV2NreGtheUlzSW5naU9pSkhjVVptZGpsU2N6aHVOVGsyTjBJeVVHeDRNbXBsV25GeU5YVnFWRGgzZFhaTldsSkhiVmh4ZUVKRkluMCIsIm5hbWVBbmRGYW1pbHlOYW1lQXRCaXJ0aCI6IkphbmUgRE9FIiwicGVyc29uYWxJZGVudGlmaWVyIjoiMDkwNDAwODA4NEgiLCJwbGFjZU9mQmlydGgiOiJMSUxMRSwgRlJBTkNFIn0sImV2aWRlbmNlIjpbeyJkb2N1bWVudFByZXNlbmNlIjpbIlBoeXNpY2FsIl0sImV2aWRlbmNlRG9jdW1lbnQiOlsiUGFzc3BvcnQiXSwic3ViamVjdFByZXNlbmNlIjoiUGh5c2ljYWwiLCJ0eXBlIjpbIkRvY3VtZW50VmVyaWZpY2F0aW9uIl0sInZlcmlmaWVyIjoiZGlkOmVic2k6MkE5Qlo5U1VlNkJhdGFjU3B2czFWNUNkakh2THBRN2JFc2kySmI2TGRIS25ReGFOIn1dLCJpZCI6InVybjp1dWlkOmZiMDliYTNkLWI3M2QtNDlhZC05ZDg4LTNkMDE4ODc4ZWE4MyIsImlzc3VlZCI6IjIwMjEtMDgtMzFUMDA6MDA6MDBaIiwiaXNzdWVyIjoiZGlkOmp3azpleUpyZEhraU9pSkZReUlzSW1OeWRpSTZJbEF0TWpVMklpd2lhMmxrSWpvaU0xbE9aRGxHYm5nNVNteDVVRlpaZDJkWFJrVXpOMFV6UjNkSk1HVkhiRU5MT0hkR2JGZDRSMlp3VFNJc0luZ2lPaUpHYjNaWk1qRk1RVUZQVkd4bkxXMHRUbVZMVjJoYVJVdzFZVVp5YmxJd2RXTktha1ExVkV0d1IzVm5JaXdpZVNJNklrTnlSa3BtUjFSa1VESTVTa3BqWTNCUldIVjVUVTh6YjJoMGVuSlVjVkI2UWxCQ1NWUlphakJ2WjBFaWZRIiwidmFsaWRGcm9tIjoiMjAyMS0wOC0zMVQwMDowMDowMFoiLCJpc3N1YW5jZURhdGUiOiIyMDI0LTA4LTIxVDA5OjExOjMzLjI0NjM4OTA0MVoifSwianRpIjoidXJuOnV1aWQ6ZmIwOWJhM2QtYjczZC00OWFkLTlkODgtM2QwMTg4NzhlYTgzIiwiaWF0IjoxNzI0MjMxNDkzLCJuYmYiOjE3MjQyMzE0OTN9.OsPTKQC6tvD6TtxeoCd8FtaIThYrYeYRjCHzDXkmgTUjRw78faT9R2bljT03ncrb0YstK0EmjM9D5lwqMZ9ZIA",
+    "addedOn": "2024-08-21T09:11:33.284Z",
+    "format": "jwt_vc"
+  }
+]
+3. Get User Consent (not needed for this tutorial)
+Normally, you should ask for the owner's consent before presenting these credentials. Only if the user agrees should you proceed with sharing them. As we are the user, we don't need this step.
+
+4. Share Credential(s) With Verifier
+Now that we have identified the credentials to share and received confirmation from the wallet owner, we are ready to reply to the verifier's presentation request. However, before we can do so we need to resolve the original presentation request using the following endpoint /exchange/resolvePresentationRequest
+
+4.1. Resolve Presentation Request
+CURL
+Endpoint:/wallet-api/wallet/{wallet}/exchange/resolvePresentationRequest| API Reference
+
+Example Request
+
+curl -X 'POST' \
+  'http://0.0.0.0:7001/wallet-api/wallet/{wallet_id}/exchange/resolvePresentationRequest' \
+  -H 'accept: text/plain' \
+  -H 'Content-Type: text/plain' \
+  -H 'authorization: Bearer {loginToken}' \
+  -d '{authorizationRequestFromVerifier}'
+Path Parameters
+
+wallet_id - Extract needed wallet id parameter via the /wallet-api/wallet/accounts/wallets endpoint as explained here. Provided as part of the URL path.
+Header Parameters
+
+authorization: String - Bearer token obtained from the login step. Format: Bearer {loginToken}.
+Body
+
+The original presentation request received from the verifier.
+
+openid4vp://authorize?
+response_type=vp_token&
+client_id=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fverify&
+response_mode=direct_post&
+state=V3pp6GFoSro6&
+presentation_definition_uri=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fpd%2FV3pp6GFoSro6&
+client_id_scheme=redirect_uri&
+client_metadata=%7B%22authorization_encrypted_response_alg%22%3A%22ECDH-ES%22%2C%22authorization_encrypted_response_enc%22%3A%22A256GCM%22%7D&
+nonce=0c4e8d3c-1017-4a38-b6d2-468e4a2c13f8&
+response_uri=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fverify%2FV3pp6GFoSro6
+Body Parameters
+
+The original presentation request received from the verifier.
+
+Example Response
+
+openid4vp://authorize?response_type=vp_token&client_id=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fverify&response_mode=direct_post&state=V3pp6GFoSro6&presentation_definition=%7B%22id%22%3A%22GgLtLahfRjuK%22%2C%22input_descriptors%22%3A%5B%7B%22id%22%3A%22VerifiableId%22%2C%22format%22%3A%7B%22jwt_vc_json%22%3A%7B%22alg%22%3A%5B%22EdDSA%22%5D%7D%7D%2C%22constraints%22%3A%7B%22fields%22%3A%5B%7B%22path%22%3A%5B%22%24.type%22%5D%2C%22filter%22%3A%7B%22type%22%3A%22string%22%2C%22pattern%22%3A%22VerifiableId%22%7D%7D%5D%7D%7D%5D%7D&presentation_definition_uri=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fpd%2FV3pp6GFoSro6&client_id_scheme=redirect_uri&client_metadata=%7B%22authorization_encrypted_response_alg%22%3A%22ECDH-ES%22%2C%22authorization_encrypted_response_enc%22%3A%22A256GCM%22%7D&nonce=0c4e8d3c-1017-4a38-b6d2-468e4a2c13f8&response_uri=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fverify%2FV3pp6GFoSro6
+4.2. Fulfill Presentation Request
+CURL
+Endpoint:/wallet-api/wallet/{wallet}/exchange/usePresentationRequest| API Reference
+
+Example Request
+
+curl -X 'POST' \
+  'http://0.0.0.0:7001/wallet-api/wallet/{wallet_id}/exchange/usePresentationRequest' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H 'authorization: Bearer {loginToken}' \
+  -d '{
+  "presentationRequest": "{resolvedPresentationRequestFromLastStep}",
+  "selectedCredentials": [
+    "{credentialIDMatchFromStepBeforeLastStep}"
+  ]
+}'
+Path Parameters
+
+wallet_id - Extract needed wallet id parameter via the /wallet-api/wallet/accounts/wallets endpoint as explained here. Provided as part of the URL path.
+Header Parameters
+
+authorization: String - Bearer token obtained from the login step. Format: Bearer {loginToken}.
+Body
+
+{
+  "presentationRequest": "openid4vp://authorize?response_type=vp_token&client_id=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fverify&response_mode=direct_post&state=pXZz119vn5SG&presentation_definition=%7B%22id%22%3A%222k6OTMoo2wbU%22%2C%22input_descriptors%22%3A%5B%7B%22id%22%3A%22VerifiableId%22%2C%22format%22%3A%7B%22jwt_vc_json%22%3A%7B%22alg%22%3A%5B%22EdDSA%22%5D%7D%7D%2C%22constraints%22%3A%7B%22fields%22%3A%5B%7B%22path%22%3A%5B%22%24.type%22%5D%2C%22filter%22%3A%7B%22type%22%3A%22string%22%2C%22pattern%22%3A%22VerifiableId%22%7D%7D%5D%7D%7D%5D%7D&presentation_definition_uri=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fpd%2FpXZz119vn5SG&client_id_scheme=redirect_uri&client_metadata=%7B%22authorization_encrypted_response_alg%22%3A%22ECDH-ES%22%2C%22authorization_encrypted_response_enc%22%3A%22A256GCM%22%7D&nonce=d319f72a-cadf-4b15-827f-8ed0e9f755c0&response_uri=https%3A%2F%2Fverifier.demo.walt.id%2Fopenid4vc%2Fverify%2FpXZz119vn5SG",
+  "selectedCredentials": [
+    "urn:uuid:fb09ba3d-b73d-49ad-9d88-3d018878ea83"
+  ]
+}
+Body Parameters
+
+presentationRequest: String - response from previous call to resolvePresentationRequest
+selectedCredentials: Array - list of credential id's to share which we received from the call to find matching credentials
+disclosures: (optional) Object - This object specifies which selectively disclosable fields of a credential should be shared with the verifier. It is applicable only if the credential to be shared contains selective disclosure attributes. The object uses the credential ID as the key(s) and an array of the disclosures of the fields to be disclosed by credential as values.
+Example:
+ "disclosures": {
+   "urn:uuid:fb09ba3d-b73d-49ad-9d88-3d018878ea83": [
+     "WyJiZ1I5OTdnRUVRNEU5bFpXNEhwVjRRPT0iLCJuYW1lIiwiSkZGIHggdmMtZWR1IFBsdWdGZXN0IDMgSW50ZXJvcGVyYWJpbGl0eSJd"
+  ],
+  "urn:uuid:fb0234-b7234d-55ad-25d88-3d018878ea83": [
+     "WyJiZ1I5OTdnRUVRNEU5bFpXNEhwVjRRPT0iLCJuYW1lIiwiSkZGIHggdmMtZWR1IFBsdWdGZXN0IDMgSW50ZXJvcGVyYWJpbGl0eSJd"
+  ]
+}
+
+Explanation:
+Key: The unique identifier (ID) of the credential to be shared.
+Value: An array containing the disclosures of credential fields that should be disclosed. This structure allows you to specify which parts of a credential are shared on a per-credential basis, enhancing privacy and control over the information disclosed.
+Example Response
+
+If the verifier provided a redirect URI we will receive it as a response.
+
+{
+  "redirectUri": null
+}
+Verify Credential Presentation
+Now we return to the Verifier to confirm whether the information provided by the wallet is valid and has successfully passed all necessary checks.
+
+CURL
+Endpoint:/openid4vc/session/{id}| API Reference
+
+First, we need to return to the original Authorization Request that we created and retrieve the state value from it. This state value serves as a unique identifier for this specific verification request.
+
+Example
+
+openid4vp://authorize?...state=a07bdb17-7d87-4965-9296-1adefcaaddd9...
+Making the call to receive the verification result
+
+Example Call
+
+curl -X 'GET' \
+  'http://0.0.0.0:7003/openid4vc/session/{state}' \
+  -H 'accept: */*'
+Path Parameters
+
+state String - state value from authorization request created via the openid4vc/verify endpoint.
+Example Response
+
+{
+  "id": "Ag9gyQkYknmI",
+  "presentationDefinition": {
+    "id": "8cu3ixcb4cm",
+    "input_descriptors": [
+      {
+        "id": "UniversityDegree",
+        "format": {
+          "jwt_vc_json": {
+            "alg": [
+              "EdDSA"
+            ]
+          }
+        },
+        "constraints": {
+          "fields": [
+            {
+              "path": [
+                "$.vc.type"
+              ],
+              "filter": {
+                "type": "string",
+                "pattern": "UniversityDegree"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "customParameters": {}
+  },
+  "tokenResponse": {
+    "vp_token": "eyJraWQiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaWVWUk9XRXBFVUZKRU0wUnFVSGRYYXpBMFNHeEhVbGhzVkVod09WTk5OVE4xY0hnelRGcEpMV1JrVlNJc0luZ2lPaUpMWVUwelYxazRObWR4ZHpGdFdsUnRORk00VmtNMGJHeG5RV1ZKVjI1Q2FUZHliMEZ2WVMwNWNVWnZJbjAjMCIsInR5cCI6IkpXVCIsImFsZyI6IkVkRFNBIn0.eyJzdWIiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaWVWUk9XRXBFVUZKRU0wUnFVSGRYYXpBMFNHeEhVbGhzVkVod09WTk5OVE4xY0hnelRGcEpMV1JrVlNJc0luZ2lPaUpMWVUwelYxazRObWR4ZHpGdFdsUnRORk00VmtNMGJHeG5RV1ZKVjI1Q2FUZHliMEZ2WVMwNWNVWnZJbjAiLCJuYmYiOjE3NDQ4NzczNjAsImlhdCI6MTc0NDg3NzQyMCwianRpIjoiOGN1M2l4Y2I0Y20iLCJpc3MiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaWVWUk9XRXBFVUZKRU0wUnFVSGRYYXpBMFNHeEhVbGhzVkVod09WTk5OVE4xY0hnelRGcEpMV1JrVlNJc0luZ2lPaUpMWVUwelYxazRObWR4ZHpGdFdsUnRORk00VmtNMGJHeG5RV1ZKVjI1Q2FUZHliMEZ2WVMwNWNVWnZJbjAiLCJub25jZSI6ImIxNmZkNDY2LTM4NDktNDc2Mi1hZGE4LTJjZmU3MzdkYWJhNSIsImF1ZCI6Imh0dHA6Ly9ob3N0LmRvY2tlci5pbnRlcm5hbDo3MDAzL29wZW5pZDR2Yy92ZXJpZnkiLCJ2cCI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvMjAxOC9jcmVkZW50aWFscy92MSJdLCJ0eXBlIjpbIlZlcmlmaWFibGVQcmVzZW50YXRpb24iXSwiaWQiOiI4Y3UzaXhjYjRjbSIsImhvbGRlciI6ImRpZDpqd2s6ZXlKcmRIa2lPaUpQUzFBaUxDSmpjbllpT2lKRlpESTFOVEU1SWl3aWEybGtJam9pZVZST1dFcEVVRkpFTTBScVVIZFhhekEwU0d4SFVsaHNWRWh3T1ZOTk5UTjFjSGd6VEZwSkxXUmtWU0lzSW5naU9pSkxZVTB6VjFrNE5tZHhkekZ0V2xSdE5GTTRWa00wYkd4blFXVkpWMjVDYVRkeWIwRnZZUzA1Y1VadkluMCIsInZlcmlmaWFibGVDcmVkZW50aWFsIjpbImV5SnJhV1FpT2lKa2FXUTZhbmRyT21WNVNuSmtTR3RwVDJsS1VGTXhRV2xNUTBwcVkyNVphVTlwU2taYVJFa3hUbFJGTlVscGQybGhNbXhyU1dwdmFXRlZjRTVWZWxacFlURndWMU5YZUhWWk1scDRXREI0YlZneFRqRmxSVzk1VTI1U1VrNVZhREpaV0c4elpFWmtVV0pyUm5GV1ZsWnJZM2xKYzBsdVoybFBhVXBIVjIxU01tUXdUVFJaVldSdlZXNWtlR1ZzWkhka1IxWnhUVVUxWVZvelVqTlhWVVpLVFZaT05WSnRZM2hpVlhSRlVsWlNVRnB1UmtaSmJqQWphVXBOVXpWaWExcFdTV3h1WTJaeFgweG1YMU4xZUVveVNuUlJOVWgyWVhvM2RGZFFia0ZxVlZWa2N5SXNJblI1Y0NJNklrcFhWQ0lzSW1Gc1p5STZJa1ZrUkZOQkluMC5leUpwYzNNaU9pSmthV1E2YW5kck9tVjVTbkprU0d0cFQybEtVRk14UVdsTVEwcHFZMjVaYVU5cFNrWmFSRWt4VGxSRk5VbHBkMmxoTW14clNXcHZhV0ZWY0U1VmVsWnBZVEZ3VjFOWGVIVlpNbHA0V0RCNGJWZ3hUakZsUlc5NVUyNVNVazVWYURKWldHOHpaRVprVVdKclJuRldWbFpyWTNsSmMwbHVaMmxQYVVwSFYyMVNNbVF3VFRSWlZXUnZWVzVrZUdWc1pIZGtSMVp4VFVVMVlWb3pVak5YVlVaS1RWWk9OVkp0WTNoaVZYUkZVbFpTVUZwdVJrWkpiakFpTENKemRXSWlPaUprYVdRNmFuZHJPbVY1U25Ka1NHdHBUMmxLVUZNeFFXbE1RMHBxWTI1WmFVOXBTa1phUkVreFRsUkZOVWxwZDJsaE1teHJTV3B2YVdWV1VrOVhSWEJGVlVaS1JVMHdVbkZWU0dSWVlYcEJNRk5IZUVoVmJHaHpWa1ZvZDA5V1RrNU9WRTR4WTBobmVsUkdjRXBNVjFKclZsTkpjMGx1WjJsUGFVcE1XVlV3ZWxZeGF6Uk9iV1I0WkhwR2RGZHNVblJPUmswMFZtdE5NR0pIZUc1UlYxWktWakkxUTJGVVpIbGlNRVoyV1ZNd05XTlZXblpKYmpBaUxDSjJZeUk2ZXlKQVkyOXVkR1Y0ZENJNld5Sm9kSFJ3Y3pvdkwzZDNkeTUzTXk1dmNtY3ZNakF4T0M5amNtVmtaVzUwYVdGc2N5OTJNU0lzSW1oMGRIQnpPaTh2ZDNkM0xuY3pMbTl5Wnk4eU1ERTRMMk55WldSbGJuUnBZV3h6TDJWNFlXMXdiR1Z6TDNZeElsMHNJbWxrSWpvaWRYSnVPblYxYVdRNk9EQmhPREUzTnpFdE56azRNUzAwWkdFMkxUZ3laV1F0TWpCaE9USTJOekppWm1GbUlpd2lkSGx3WlNJNld5SldaWEpwWm1saFlteGxRM0psWkdWdWRHbGhiQ0lzSWxWdWFYWmxjbk5wZEhsRVpXZHlaV1VpWFN3aWFYTnpkV1Z5SWpwN0ltbGtJam9pWkdsa09tcDNhenBsZVVweVpFaHJhVTlwU2xCVE1VRnBURU5LYW1OdVdXbFBhVXBHV2tSSk1VNVVSVFZKYVhkcFlUSnNhMGxxYjJsaFZYQk9WWHBXYVdFeGNGZFRWM2gxV1RKYWVGZ3dlRzFZTVU0eFpVVnZlVk51VWxKT1ZXZ3lXVmh2TTJSR1pGRmlhMFp4VmxaV2EyTjVTWE5KYm1kcFQybEtSMWR0VWpKa01FMDBXVlZrYjFWdVpIaGxiR1IzWkVkV2NVMUZOV0ZhTTFJelYxVkdTazFXVGpWU2JXTjRZbFYwUlZKV1VsQmFia1pHU1c0d0luMHNJbWx6YzNWaGJtTmxSR0YwWlNJNklqSXdNalV0TURRdE1UZFVNRGM2TkRnNk5EWXVNelkxTkRrM01EZzJXaUlzSW1OeVpXUmxiblJwWVd4VGRXSnFaV04wSWpwN0ltbGtJam9pWkdsa09tcDNhenBsZVVweVpFaHJhVTlwU2xCVE1VRnBURU5LYW1OdVdXbFBhVXBHV2tSSk1VNVVSVFZKYVhkcFlUSnNhMGxxYjJsbFZsSlBWMFZ3UlZWR1NrVk5NRkp4VlVoa1dHRjZRVEJUUjNoSVZXeG9jMVpGYUhkUFZrNU9UbFJPTVdOSVozcFVSbkJLVEZkU2ExWlRTWE5KYm1kcFQybEtURmxWTUhwV01XczBUbTFrZUdSNlJuUlhiRkowVGtaTk5GWnJUVEJpUjNodVVWZFdTbFl5TlVOaFZHUjVZakJHZGxsVE1EVmpWVnAyU1c0d0lpd2laR1ZuY21WbElqcDdJblI1Y0dVaU9pSkNZV05vWld4dmNrUmxaM0psWlNJc0ltNWhiV1VpT2lKQ1lXTm9aV3h2Y2lCdlppQlRZMmxsYm1ObElHRnVaQ0JCY25SekluMTlMQ0psZUhCcGNtRjBhVzl1UkdGMFpTSTZJakl3TWpZdE1EUXRNVGRVTURjNk5EZzZORFl1TXpZMk1EQTJNemMzV2lKOUxDSnFkR2tpT2lKMWNtNDZkWFZwWkRvNE1HRTRNVGMzTVMwM09UZ3hMVFJrWVRZdE9ESmxaQzB5TUdFNU1qWTNNbUptWVdZaUxDSmxlSEFpT2pFM056WTBNVEl4TWpZc0ltbGhkQ0k2TVRjME5EZzNOakV5Tml3aWJtSm1Jam94TnpRME9EYzJNVEkyZlEuSVNPNmhxRmVNdnpBOE4tRXRKcEFYd2h2dWZTaWIxYk9FYTFWdGhhMWlpSGJHN1plTVFGVll6ZnJmbnBpRmJXM2ExaV9ySVRud3RCS2VLNkVVUGdUQkEiXX19.AUqf8cy4UgaEbL4-2dsJ1fkEf_xPRJkbBhOJJOJHw8XsV6xDAXFEaakw6IMyr47cpUr9C-O1nji4-tHjbocyCg",
+    "presentation_submission": {
+      "id": "8cu3ixcb4cm",
+      "definition_id": "8cu3ixcb4cm",
+      "descriptor_map": [
+        {
+          "id": "UniversityDegree",
+          "format": "jwt_vp",
+          "path": "$",
+          "path_nested": {
+            "id": "UniversityDegree",
+            "format": "jwt_vc_json",
+            "path": "$.verifiableCredential[0]",
+            "customParameters": {}
+          }
+        }
+      ]
+    },
+    "state": "Ag9gyQkYknmI",
+    "customParameters": {}
+  },
+  "verificationResult": true,
+  "policyResults": {
+    "results": [
+      {
+        "credential": "VerifiablePresentation",
+        "policyResults": [
+          {
+            "policy": "signature",
+            "description": "Checks a JWT credential by verifying its cryptographic signature using the key referenced by the DID in `iss`.",
+            "is_success": true,
+            "result": {
+              "sub": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoieVROWEpEUFJEM0RqUHdXazA0SGxHUlhsVEhwOVNNNTN1cHgzTFpJLWRkVSIsIngiOiJLYU0zV1k4NmdxdzFtWlRtNFM4VkM0bGxnQWVJV25CaTdyb0FvYS05cUZvIn0",
+              "nbf": 1744877360,
+              "iat": 1744877420,
+              "jti": "8cu3ixcb4cm",
+              "iss": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoieVROWEpEUFJEM0RqUHdXazA0SGxHUlhsVEhwOVNNNTN1cHgzTFpJLWRkVSIsIngiOiJLYU0zV1k4NmdxdzFtWlRtNFM4VkM0bGxnQWVJV25CaTdyb0FvYS05cUZvIn0",
+              "nonce": "b16fd466-3849-4762-ada8-2cfe737daba5",
+              "aud": "http://host.docker.internal:7003/openid4vc/verify",
+              "vp": {
+                "@context": [
+                  "https://www.w3.org/2018/credentials/v1"
+                ],
+                "type": [
+                  "VerifiablePresentation"
+                ],
+                "id": "8cu3ixcb4cm",
+                "holder": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoieVROWEpEUFJEM0RqUHdXazA0SGxHUlhsVEhwOVNNNTN1cHgzTFpJLWRkVSIsIngiOiJLYU0zV1k4NmdxdzFtWlRtNFM4VkM0bGxnQWVJV25CaTdyb0FvYS05cUZvIn0",
+                "verifiableCredential": [
+                  "eyJraWQiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaWFVcE5VelZpYTFwV1NXeHVZMlp4WDB4bVgxTjFlRW95U25SUk5VaDJZWG8zZEZkUWJrRnFWVlZrY3lJc0luZ2lPaUpHV21SMmQwTTRZVWRvVW5keGVsZHdkR1ZxTUU1YVozUjNXVUZKTVZONVJtY3hiVXRFUlZSUFpuRkZJbjAjaUpNUzVia1pWSWxuY2ZxX0xmX1N1eEoySnRRNUh2YXo3dFdQbkFqVVVkcyIsInR5cCI6IkpXVCIsImFsZyI6IkVkRFNBIn0.eyJpc3MiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaWFVcE5VelZpYTFwV1NXeHVZMlp4WDB4bVgxTjFlRW95U25SUk5VaDJZWG8zZEZkUWJrRnFWVlZrY3lJc0luZ2lPaUpHV21SMmQwTTRZVWRvVW5keGVsZHdkR1ZxTUU1YVozUjNXVUZKTVZONVJtY3hiVXRFUlZSUFpuRkZJbjAiLCJzdWIiOiJkaWQ6andrOmV5SnJkSGtpT2lKUFMxQWlMQ0pqY25ZaU9pSkZaREkxTlRFNUlpd2lhMmxrSWpvaWVWUk9XRXBFVUZKRU0wUnFVSGRYYXpBMFNHeEhVbGhzVkVod09WTk5OVE4xY0hnelRGcEpMV1JrVlNJc0luZ2lPaUpMWVUwelYxazRObWR4ZHpGdFdsUnRORk00VmtNMGJHeG5RV1ZKVjI1Q2FUZHliMEZ2WVMwNWNVWnZJbjAiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvMjAxOC9jcmVkZW50aWFscy92MSIsImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL2V4YW1wbGVzL3YxIl0sImlkIjoidXJuOnV1aWQ6ODBhODE3NzEtNzk4MS00ZGE2LTgyZWQtMjBhOTI2NzJiZmFmIiwidHlwZSI6WyJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsIlVuaXZlcnNpdHlEZWdyZWUiXSwiaXNzdWVyIjp7ImlkIjoiZGlkOmp3azpleUpyZEhraU9pSlBTMUFpTENKamNuWWlPaUpGWkRJMU5URTVJaXdpYTJsa0lqb2lhVXBOVXpWaWExcFdTV3h1WTJaeFgweG1YMU4xZUVveVNuUlJOVWgyWVhvM2RGZFFia0ZxVlZWa2N5SXNJbmdpT2lKR1dtUjJkME00WVVkb1VuZHhlbGR3ZEdWcU1FNWFaM1IzV1VGSk1WTjVSbWN4YlV0RVJWUlBabkZGSW4wIn0sImlzc3VhbmNlRGF0ZSI6IjIwMjUtMDQtMTdUMDc6NDg6NDYuMzY1NDk3MDg2WiIsImNyZWRlbnRpYWxTdWJqZWN0Ijp7ImlkIjoiZGlkOmp3azpleUpyZEhraU9pSlBTMUFpTENKamNuWWlPaUpGWkRJMU5URTVJaXdpYTJsa0lqb2llVlJPV0VwRVVGSkVNMFJxVUhkWGF6QTBTR3hIVWxoc1ZFaHdPVk5OTlROMWNIZ3pURnBKTFdSa1ZTSXNJbmdpT2lKTFlVMHpWMWs0Tm1keGR6RnRXbFJ0TkZNNFZrTTBiR3huUVdWSlYyNUNhVGR5YjBGdllTMDVjVVp2SW4wIiwiZGVncmVlIjp7InR5cGUiOiJCYWNoZWxvckRlZ3JlZSIsIm5hbWUiOiJCYWNoZWxvciBvZiBTY2llbmNlIGFuZCBBcnRzIn19LCJleHBpcmF0aW9uRGF0ZSI6IjIwMjYtMDQtMTdUMDc6NDg6NDYuMzY2MDA2Mzc3WiJ9LCJqdGkiOiJ1cm46dXVpZDo4MGE4MTc3MS03OTgxLTRkYTYtODJlZC0yMGE5MjY3MmJmYWYiLCJleHAiOjE3NzY0MTIxMjYsImlhdCI6MTc0NDg3NjEyNiwibmJmIjoxNzQ0ODc2MTI2fQ.ISO6hqFeMvzA8N-EtJpAXwhvufSib1bOEa1Vtha1iiHbG7ZeMQFVYzfrfnpiFbW3a1i_rITnwtBKeK6EUPgTBA"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "credential": "UniversityDegree",
+        "policyResults": [
+          {
+            "policy": "signature",
+            "description": "Checks a JWT credential by verifying its cryptographic signature using the key referenced by the DID in `iss`.",
+            "is_success": true,
+            "result": {
+              "iss": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoiaUpNUzVia1pWSWxuY2ZxX0xmX1N1eEoySnRRNUh2YXo3dFdQbkFqVVVkcyIsIngiOiJGWmR2d0M4YUdoUndxeldwdGVqME5aZ3R3WUFJMVN5RmcxbUtERVRPZnFFIn0",
+              "sub": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoieVROWEpEUFJEM0RqUHdXazA0SGxHUlhsVEhwOVNNNTN1cHgzTFpJLWRkVSIsIngiOiJLYU0zV1k4NmdxdzFtWlRtNFM4VkM0bGxnQWVJV25CaTdyb0FvYS05cUZvIn0",
+              "vc": {
+                "@context": [
+                  "https://www.w3.org/2018/credentials/v1",
+                  "https://www.w3.org/2018/credentials/examples/v1"
+                ],
+                "id": "urn:uuid:80a81771-7981-4da6-82ed-20a92672bfaf",
+                "type": [
+                  "VerifiableCredential",
+                  "UniversityDegree"
+                ],
+                "issuer": {
+                  "id": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoiaUpNUzVia1pWSWxuY2ZxX0xmX1N1eEoySnRRNUh2YXo3dFdQbkFqVVVkcyIsIngiOiJGWmR2d0M4YUdoUndxeldwdGVqME5aZ3R3WUFJMVN5RmcxbUtERVRPZnFFIn0"
+                },
+                "issuanceDate": "2025-04-17T07:48:46.365497086Z",
+                "credentialSubject": {
+                  "id": "did:jwk:eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5Iiwia2lkIjoieVROWEpEUFJEM0RqUHdXazA0SGxHUlhsVEhwOVNNNTN1cHgzTFpJLWRkVSIsIngiOiJLYU0zV1k4NmdxdzFtWlRtNFM4VkM0bGxnQWVJV25CaTdyb0FvYS05cUZvIn0",
+                  "degree": {
+                    "type": "BachelorDegree",
+                    "name": "Bachelor of Science and Arts"
+                  }
+                },
+                "expirationDate": "2026-04-17T07:48:46.366006377Z"
+              },
+              "jti": "urn:uuid:80a81771-7981-4da6-82ed-20a92672bfaf",
+              "exp": 1776412126,
+              "iat": 1744876126,
+              "nbf": 1744876126
+            }
+          }
+        ]
+      }
+    ],
+    "time": "PT2.675756835S",
+    "policiesRun": 2
+  },
+  "customParameters": {}
+}
+Verification Status Policies Response
+
+The response of the verification status call will contain the status of the verification policies applied to the credential(s) presented by the user. The policy results will be in the following format:
+
+{
+  "verificationResult": true,
+  "policyResults": {
+    "results": [
+      {
+        "credential": "VerifiableDiploma",
+        "policies": [
+          {
+            "policy": "signature",
+            "is_success": true
+          }
+        ]
+      }
+    ]
+  }
+}
+The verificationResult field will be true if all policies were successful, otherwise it will be false.
+
+The policyResults field will contain the results of the policies applied to each credential. The credential field will contain the name of the credential, and the policies field will contain the results of the policies applied to the credential. The policy field will contain the name of the policy, and the is_success field will contain the result of the policy.
