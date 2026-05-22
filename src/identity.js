@@ -9,16 +9,26 @@ const axios = require('axios');
 // Default walt.id Wallet API endpoint
 const WALT_API_BASE = process.env.WALT_ID_API_URL || 'http://localhost:7001/wallet-api';
 
+// In-memory session cookie
+let sessionCookie = null;
+
 // ===== HELPER: Make API calls with error handling =====
-async function callWaltAPI(method, endpoint, data = null) {
+async function callWaltAPI(method, endpoint, data = null, extraHeaders = {}) {
     try {
         const url = `${WALT_API_BASE}${endpoint}`;
+        const headers = {
+            'Content-Type': 'application/json',
+            ...extraHeaders
+        };
+
+        if (sessionCookie && !headers.Cookie) {
+            headers.Cookie = sessionCookie;
+        }
+
         const config = {
             method: method,
             url: url,
-            headers: {
-                'Content-Type': 'application/json'
-            }
+            headers: headers
         };
 
         if (data) {
@@ -27,6 +37,13 @@ async function callWaltAPI(method, endpoint, data = null) {
 
         console.log(`[walt.id] ${method.toUpperCase()} ${url}`);
         const response = await axios(config);
+
+        // Capture session cookie from login response
+        const setCookie = response.headers?.['set-cookie'];
+        if (setCookie && setCookie.length > 0) {
+            sessionCookie = setCookie.map(cookie => cookie.split(';')[0]).join('; ');
+        }
+
         return response.data;
     } catch (error) {
         console.error(`[walt.id ERROR] ${error.message}`);
@@ -117,7 +134,7 @@ async function registerUserInWallet(email, password, name) {
                     `/wallet/${walletId}/dids`
                 );
                 if (didsResponse && didsResponse.dids && didsResponse.dids.length > 0) {
-                    did = didsResponse.dids[0];
+                    did = didsResponse.dids[0].did;
                 }
             } catch (didError) {
                 console.warn(`⚠ Could not retrieve DID after login: ${didError.message}`);
