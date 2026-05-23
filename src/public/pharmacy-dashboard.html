@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nadzorna Plošča Lekarne</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- NAVBAR -->
+    <nav class="navbar">
+        <div class="navbar-container">
+            <h1 class="navbar-title">💊 Nadzorna Plošča Lekarne</h1>
+            <div class="navbar-right">
+                <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
+                <button id="btn-back-home" class="btn-logout">Nazaj na Domov</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- MAIN CONTENT -->
+    <main class="container dashboard-container">
+        <!-- USER PROFILE -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>👤 Moj Profil</h2>
+                <div id="pharmacy-profile" class="profile-info">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- VERIFY MEDICINE -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>✓ Preverjanje Avtentičnosti Zdravila</h2>
+                <p>Preverite avtentičnost zdravila z uporabo SSI poverilnic.</p>
+                
+                <div class="form-group">
+                    <label for="medicine-id-verify">ID Zdravila:</label>
+                    <input type="text" id="medicine-id-verify" class="form-control" placeholder="npr. MED-2024-001">
+                </div>
+
+                <div class="form-group">
+                    <label for="batch-number-verify">Serijska Številka:</label>
+                    <input type="text" id="batch-number-verify" class="form-control" placeholder="npr. BATCH-2024-001">
+                </div>
+
+                <button id="btn-verify-medicine" class="btn btn-primary">
+                    Preveri Avtentičnost
+                </button>
+                <p id="verify-error" class="error-message" style="display:none;"></p>
+                <p id="verify-success" class="success-message" style="display:none;"></p>
+                <div id="verify-result" class="verification-result" style="display:none;">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- RECEIVE MEDICINES FROM DISTRIBUTOR -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>📥 Prevzem Zdravil od Distributorja</h2>
+                <p>Prejemajte zdravila od distributorja in potrdite sprejem.</p>
+                
+                <div class="form-group">
+                    <label for="medicine-id-pharmacy-receive">ID Zdravila:</label>
+                    <input type="text" id="medicine-id-pharmacy-receive" class="form-control" placeholder="npr. MED-2024-001">
+                </div>
+
+                <div class="form-group">
+                    <label for="quantity-pharmacy-receive">Količina:</label>
+                    <input type="number" id="quantity-pharmacy-receive" class="form-control" placeholder="Število enot">
+                </div>
+
+                <button id="btn-receive-from-distributor" class="btn btn-primary">
+                    Potrdi Sprejem
+                </button>
+                <p id="pharmacy-receive-error" class="error-message" style="display:none;"></p>
+                <p id="pharmacy-receive-success" class="success-message" style="display:none;"></p>
+            </div>
+        </section>
+
+        <!-- PHARMACY INVENTORY -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>💊 Inventar Lekarne</h2>
+                <div id="pharmacy-inventory" class="table-container">
+                    <p class="text-muted">Ni še prevzetih zdravil...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- SUPPLY CHAIN VERIFICATION -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>🔍 Sledljivost Zdravila (Blockchain)</h2>
+                <p>Preverite celoten proces zdravila od proizvajalca do lekarne.</p>
+                
+                <div class="form-group">
+                    <label for="medicine-id-trace">ID Zdravila:</label>
+                    <input type="text" id="medicine-id-trace" class="form-control" placeholder="npr. MED-2024-001">
+                </div>
+
+                <button id="btn-trace-medicine" class="btn btn-primary">
+                    Preurite Sledljivost
+                </button>
+                <p id="trace-error" class="error-message" style="display:none;"></p>
+                <div id="trace-result" class="trace-result" style="display:none;">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- RECENT DELIVERIES -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>📦 Nedavne Dostave</h2>
+                <div id="recent-deliveries" class="table-container">
+                    <p class="text-muted">Ni še dostav...</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <p>Nadzorna Plošča Lekarne | Sistem za Sledljivost Zdravil</p>
+    </footer>
+
+    <script src="dashboard-pharmacy.js"></script>
+</body>
+</html>

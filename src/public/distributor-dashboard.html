@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nadzorna Plošča Distributorja</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- NAVBAR -->
+    <nav class="navbar">
+        <div class="navbar-container">
+            <h1 class="navbar-title">📦 Nadzorna Plošča Distributorja</h1>
+            <div class="navbar-right">
+                <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
+                <button id="btn-back-home" class="btn-logout">Nazaj na Domov</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- MAIN CONTENT -->
+    <main class="container dashboard-container">
+        <!-- USER PROFILE -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>👤 Moj Profil</h2>
+                <div id="distributor-profile" class="profile-info">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- RECEIVE MEDICINES -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>📥 Prevzem Zdravil od Proizvajalca</h2>
+                <p>Prejemajte in potrdite sprejem zdravil od proizvajalca.</p>
+                
+                <div class="form-group">
+                    <label for="medicine-id-receive">ID Zdravila:</label>
+                    <input type="text" id="medicine-id-receive" class="form-control" placeholder="npr. MED-2024-001">
+                </div>
+
+                <div class="form-group">
+                    <label for="medicine-batch-receive">Serijska Številka:</label>
+                    <input type="text" id="medicine-batch-receive" class="form-control" placeholder="npr. BATCH-2024-001">
+                </div>
+
+                <div class="form-group">
+                    <label for="quantity-receive">Količina:</label>
+                    <input type="number" id="quantity-receive" class="form-control" placeholder="Število enot">
+                </div>
+
+                <button id="btn-receive-medicine" class="btn btn-primary">
+                    Potrdi Sprejem
+                </button>
+                <p id="receive-error" class="error-message" style="display:none;"></p>
+                <p id="receive-success" class="success-message" style="display:none;"></p>
+            </div>
+        </section>
+
+        <!-- UPDATE SHIPMENT STATUS -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>🚚 Posodobitev Statusa Pošiljke</h2>
+                <p>Posodabljajte status pošiljke pri prenosu zdravil.</p>
+                
+                <div class="form-group">
+                    <label for="shipment-id">ID Pošiljke:</label>
+                    <input type="text" id="shipment-id" class="form-control" placeholder="npr. SHIP-2024-001">
+                </div>
+
+                <div class="form-group">
+                    <label for="shipment-status">Novi Status:</label>
+                    <select id="shipment-status" class="form-control">
+                        <option value="">-- Izbira --</option>
+                        <option value="in_transit">🚚 V Prometu</option>
+                        <option value="in_warehouse">📦 V Skladišču</option>
+                        <option value="ready_for_delivery">✓ Pripravljeno za Dostavo</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="shipment-location">Trenutna Lokacija:</label>
+                    <input type="text" id="shipment-location" class="form-control" placeholder="npr. Ljubljana">
+                </div>
+
+                <button id="btn-update-shipment" class="btn btn-primary">
+                    Posodobi Status
+                </button>
+                <p id="shipment-error" class="error-message" style="display:none;"></p>
+                <p id="shipment-success" class="success-message" style="display:none;"></p>
+            </div>
+        </section>
+
+        <!-- INVENTORY -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>📊 Inventar</h2>
+                <div id="inventory-list" class="table-container">
+                    <p class="text-muted">Ni še prejenih zdravil...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- SHIPMENT HISTORY -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>📋 Zgodovino Pošiljk</h2>
+                <div id="shipment-history" class="table-container">
+                    <p class="text-muted">Ni še pošiljk...</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <p>Nadzorna Plošča Distributorja | Sistem za Sledljivost Zdravil</p>
+    </footer>
+
+    <script src="dashboard-distributor.js"></script>
+</body>
+</html>
