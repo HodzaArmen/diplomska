@@ -154,9 +154,23 @@ async function registerUserOnBlockchain(did, role) {
         const receipt = await tx.wait();
         console.log(`✓ User registered (block: ${receipt.blockNumber})`);
 
-        return receipt;
+        return {
+            success: true,
+            alreadyRegistered: false,
+            receipt
+        };
 
     } catch (error) {
+        const msg = String(error.message || '');
+        if (msg.includes('User already registered')) {
+            console.log(`ℹ User already registered on-chain, continuing...`);
+            return {
+                success: true,
+                alreadyRegistered: true,
+                receipt: null
+            };
+        }
+
         console.error(`✗ User registration failed: ${error.message}`);
         throw error;
     }
@@ -248,13 +262,21 @@ async function getMedicineFromBlockchain(medicineId) {
             medicineId: medicine.medicineId,
             ipfsHash: medicine.ipfsHash,
             manufacturer: medicine.manufacturer,
+            createdAt: Number(medicine.createdAt),
             status: medicine.status,
             currentHolder: medicine.currentHolder,
             currentHolderDID: medicine.currentHolderDID
         };
 
     } catch (error) {
-        console.error(`✗ Failed to retrieve medicine: ${error.message}`);
+        // Check if this is a data decoding error (empty return)
+        if (error.code === 'BAD_DATA' && error.info && error.info.value === '0x') {
+            console.error(`✗ Failed to retrieve medicine: ${error.message}`);
+            console.error(`  Note: Contract may not have stored data for medicine ID: ${medicineId}`);
+            console.error(`  This could mean: contract not deployed, or medicine not registered`);
+        } else {
+            console.error(`✗ Failed to retrieve medicine: ${error.message}`);
+        }
         throw error;
     }
 }
@@ -275,11 +297,28 @@ async function getMedicineHistory(medicineId) {
 
         const history = await contract.getMedicineHistory(medicineId);
 
-        console.log(`✓ History retrieved (${history.length} transactions)`);
-        return history;
+        const normalizedHistory = history.map((tx) => ({
+            medicineId: tx.medicineId,
+            from: tx.from,
+            fromDID: tx.fromDID,
+            to: tx.to,
+            toDID: tx.toDID,
+            timestamp: Number(tx.timestamp),
+            status: tx.status
+        }));
+
+        console.log(`✓ History retrieved (${normalizedHistory.length} transactions)`);
+        return normalizedHistory;
 
     } catch (error) {
-        console.error(`✗ Failed to retrieve history: ${error.message}`);
+        // Check if this is a data decoding error (empty return)
+        if (error.code === 'BAD_DATA' && error.info && error.info.value === '0x') {
+            console.error(`✗ Failed to retrieve history: ${error.message}`);
+            console.error(`  Note: Contract may not have history for medicine ID: ${medicineId}`);
+            console.error(`  This could mean: contract not deployed, or medicine not registered`);
+        } else {
+            console.error(`✗ Failed to retrieve history: ${error.message}`);
+        }
         throw error;
     }
 }
