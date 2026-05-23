@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistem za Sledljivost Zdravil - SSI</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- NAVBAR -->
+    <nav class="navbar">
+        <div class="navbar-container">
+            <h1 class="navbar-title">🏥 Sistem za Sledljivost Zdravil</h1>
+            <div class="navbar-right">
+                <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
+                <button id="btn-logout" class="btn-logout" style="display:none;">Odjava</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- MAIN CONTENT -->
+    <main class="container">
+        <!-- STEP 1: MetaMask Connection -->
+        <section id="section-metamask" class="section active">
+            <div class="card">
+                <h2>🔐 Korak 1: Povežite MetaMask Denarnico</h2>
+                <p>Za nadaljevanje se morate najprej povezati s svojo MetaMask denarnico.</p>
+                
+                <div class="form-group">
+                    <label for="role-select">Izberite vlogo:</label>
+                    <select id="role-select" class="form-control">
+                        <option value="">-- Izbira --</option>
+                        <option value="manufacturer">🏭 Proizvajalec (Manufacturer)</option>
+                        <option value="distributor">📦 Distributor</option>
+                        <option value="pharmacy">💊 Lekarna (Pharmacy)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="company-name">Ime Podjetja:</label>
+                    <input type="text" id="company-name" class="form-control" placeholder="npr. Farmacija d.d.">
+                </div>
+
+                <div class="form-group">
+                    <label for="company-email">Email:</label>
+                    <input type="email" id="company-email" class="form-control" placeholder="npr. info@farmacija.si">
+                </div>
+
+                <button id="btn-connect-metamask" class="btn btn-primary btn-large">
+                    Povežite MetaMask
+                </button>
+                <p id="metamask-error" class="error-message" style="display:none;"></p>
+            </div>
+        </section>
+
+        <!-- STEP 2: Walt.id Registration -->
+        <section id="section-walt" class="section" style="display:none;">
+            <div class="card">
+                <h2>🪪 Korak 2: Registracija v Walt.id</h2>
+                <p>Vaša denarnica je povezana. Sedaj se registrirajte v Walt.id sistem za pridobitev DID.</p>
+                
+                <div id="user-info" class="user-info">
+                    <!-- Will be populated by JS -->
+                </div>
+
+                <button id="btn-register-walt" class="btn btn-primary btn-large">
+                    Registrirajte se v Walt.id
+                </button>
+                <p id="walt-error" class="error-message" style="display:none;"></p>
+            </div>
+        </section>
+
+        <!-- STEP 3: Dashboard Selection -->
+        <section id="section-dashboard" class="section" style="display:none;">
+            <div class="card">
+                <h2>📊 Nadzorna Plošča</h2>
+                <p>Dobrodošli! Izbira vam primerna nadzorna plošča:</p>
+                
+                <div class="dashboard-options">
+                    <button id="btn-manufacturer-dashboard" class="dashboard-btn manufacturer-btn" style="display:none;">
+                        <span class="icon">🏭</span>
+                        <span class="label">Nadzorna Plošča Proizvajalca</span>
+                    </button>
+                    <button id="btn-distributor-dashboard" class="dashboard-btn distributor-btn" style="display:none;">
+                        <span class="icon">📦</span>
+                        <span class="label">Nadzorna Plošča Distributorja</span>
+                    </button>
+                    <button id="btn-pharmacy-dashboard" class="dashboard-btn pharmacy-btn" style="display:none;">
+                        <span class="icon">💊</span>
+                        <span class="label">Nadzorna Plošča Lekarne</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <p>Diplomska naloga - Sistem za Sledljivost Zdravil z SSI</p>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>
