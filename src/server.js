@@ -1,5 +1,5 @@
 /**
- * server-new.js
+ * server.js
  * Main Express server with MetaMask authentication and role-based dashboards
  * Supports multiple users/accounts with different roles: Manufacturer, Distributor, Pharmacy
  */
