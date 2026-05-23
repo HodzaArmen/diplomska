@@ -87,10 +87,41 @@ function createProductData(medicineInfo) {
     };
 }
 
+// ToDo: Remove it after testing
+// ===== FUNCTION: Generate sample product data =====
+/**
+ * Generate sample medicine data for testing
+ * @param {number} index - Product index for generating unique data
+ * @returns {Object} - Sample product data
+ */
+function generateSampleProductData(index = 1) {
+    const medicines = [
+        { name: 'Aspirin', manufacturer: 'Pharma Corp' },
+        { name: 'Antibiotics', manufacturer: 'HealthCare Inc' },
+        { name: 'Vitamins', manufacturer: 'Wellness Ltd' }
+    ];
+
+    const med = medicines[index % medicines.length];
+    const timestamp = Date.now();
+
+    return {
+        medicineId: `MED-${String(timestamp).slice(-6)}-${index}`,
+        name: med.name,
+        manufacturer: med.manufacturer,
+        serialNumber: `SN-${String(Math.random()).substr(2, 8)}`,
+        batchNumber: `BATCH-${String(Date.now()).slice(-5)}`,
+        quantity: 100 + (index * 50),
+        expiryDate: new Date(Date.now() + 365*24*60*60*1000).toISOString().split('T')[0],
+        description: `Sample ${med.name} for testing`,
+        origin: 'Test Origin',
+        manufacturerDID: `did:key:z6Mkr${String(index).padStart(25, '0')}`
+    };
+}
 
 // ===== EXPORT =====
 module.exports = {
     uploadProductData,
     createProductData,
+    generateSampleProductData,
     PINATA_API_URL
 };
