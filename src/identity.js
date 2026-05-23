@@ -46,13 +46,79 @@ async function callWaltAPI(method, endpoint, data = null, extraHeaders = {}) {
 
         return response.data;
     } catch (error) {
-        console.error(`[walt.id ERROR] ${error.message}`);
-        if (error.response) {
-            console.error(`Response status: ${error.response.status}`);
-            console.error(`Response data:`, error.response.data);
+        if (error?.response?.status === 409 || /already exists/i.test(error?.message || '')) {
+            throw error; 
+        } else {
+            console.error(`[walt.id ERROR] ${error.message}`);
+            if (error.response) {
+                console.error(`Response status: ${error.response.status}`);
+                console.error(`Response data:`, error.response.data);
+            }
+            throw error;
         }
-        throw error;
     }
+}
+
+function isAlreadyRegisteredError(error) {
+    return error?.response?.status === 409 || /already exists/i.test(error?.message || '');
+}
+
+function extractDidValue(response) {
+    if (!response) {
+        return null;
+    }
+
+    if (typeof response === 'string') {
+        return response;
+    }
+
+    if (response.did) {
+        return response.did;
+    }
+
+    if (response.id && typeof response.id === 'string' && response.id.startsWith('did:')) {
+        return response.id;
+    }
+
+    if (response.dids && response.dids.length > 0) {
+        const firstDid = response.dids[0];
+        if (typeof firstDid === 'string') {
+            return firstDid;
+        }
+        return firstDid.did || firstDid.id || null;
+    }
+
+    if (Array.isArray(response) && response.length > 0) {
+        const firstItem = response[0];
+        if (typeof firstItem === 'string') {
+            return firstItem;
+        }
+        return firstItem?.did || firstItem?.id || null;
+    }
+
+    return null;
+}
+
+async function resolveWalletDetails(email, password, walletIdHint = null) {
+    let did = null;
+    let walletId = walletIdHint;
+
+    await callWaltAPI('POST', '/auth/login', {
+        type: 'email',
+        email: email,
+        password: password
+    });
+    
+    console.log(`✓ User authenticated, attempting to retrieve DID and wallet ID...`);
+
+    if (!walletId) {
+        walletId = await getWalletId();
+    }
+
+    const didsResponse = await callWaltAPI('GET', `/wallet/${walletId}/dids`);
+    did = extractDidValue(didsResponse);
+
+    return { did, walletId };
 }
 
 // ===== HELPER: Get wallet ID =====
@@ -93,49 +159,44 @@ async function registerUserInWallet(email, password, name) {
             type: "email"
         };
 
-        const registerResponse = await callWaltAPI(
-            'POST',
-            '/auth/register',
-            registerData
-        );
+        let registerResponse = null;
+        let alreadyRegistered = false;
 
-        console.log(`✓ Wallet created for ${email}`);
+        try {
+            registerResponse = await callWaltAPI(
+                'POST',
+                '/auth/register',
+                registerData
+            );
+            
+            console.log(`✓ Wallet created for ${email}`);
+        } catch (error) {
+            if (!isAlreadyRegisteredError(error)) {
+                throw error;
+            }
+
+            alreadyRegistered = true;
+            console.log(`ℹ User already registered in walt.id, reusing existing account...`);
+        }
 
         // Extract DID from response or fetch it from wallet-specific endpoint
         let did = null;
         let walletId = null;
 
-        if (registerResponse.did) {
+        if (registerResponse?.did) {
             did = registerResponse.did;
         }
 
-        if (registerResponse.walletId) {
+        if (registerResponse?.walletId) {
             walletId = registerResponse.walletId;
         }
 
         // After registration, login to get authenticated session before accessing protected endpoints
         if (!did || !walletId) {
             try {
-                // Login to establish authentication
-                await callWaltAPI('POST', '/auth/login', {
-                    type: "email",
-                    email: email,
-                    password: password
-                });
-
-                // Now get the wallet ID with authenticated session
-                if (!walletId) {
-                    walletId = await getWalletId();
-                }
-
-                // Then get DIDs for this specific wallet
-                const didsResponse = await callWaltAPI(
-                    'GET',
-                    `/wallet/${walletId}/dids`
-                );
-                if (didsResponse && didsResponse.dids && didsResponse.dids.length > 0) {
-                    did = didsResponse.dids[0].did;
-                }
+                const resolved = await resolveWalletDetails(email, password, walletId);
+                did = did || resolved.did;
+                walletId = walletId || resolved.walletId;
             } catch (didError) {
                 console.warn(`⚠ Could not retrieve DID after login: ${didError.message}`);
             }
@@ -145,7 +206,7 @@ async function registerUserInWallet(email, password, name) {
             email: email,
             did: did || 'did:key:generated',
             walletId: walletId || email,
-            status: 'registered'
+            status: alreadyRegistered ? 'already_registered' : 'registered'
         };
 
         console.log(`✓ DID: ${result.did}`);
@@ -198,9 +259,7 @@ async function loginWithDID(email, password) {
                 'GET',
                 `/wallet/${walletId}/dids`
             );
-            if (didsResponse && didsResponse.dids && didsResponse.dids.length > 0) {
-                did = didsResponse.dids[0];
-            }
+            did = extractDidValue(didsResponse);
         } catch (didError) {
             console.warn(`⚠ Could not retrieve DID: ${didError.message}`);
         }
@@ -242,8 +301,9 @@ async function getUserDID(email) {
             `/wallet/${walletId}/dids`
         );
         
-        if (didsResponse && didsResponse.dids && didsResponse.dids.length > 0) {
-            return didsResponse.dids[0];
+        const did = extractDidValue(didsResponse);
+        if (did) {
+            return did;
         }
         
         throw new Error(`No DID found for ${email}`);
