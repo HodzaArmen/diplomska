@@ -171,6 +171,24 @@ services:
     ports:
       - $POSTGRES_DB_PORT:5432 #TODO: tcp/udp proxy with caddy
 
+  app-postgres:
+    image: postgres
+    container_name: app-postgres
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-q", "-U", "$APP_DB_USERNAME" ]
+      interval: 5s
+      timeout: 1s
+      retries: 5
+    restart: always
+    environment:
+      POSTGRES_DB: $APP_DB_NAME
+      POSTGRES_USER: $APP_DB_USERNAME
+      POSTGRES_PASSWORD: $APP_DB_PASSWORD
+    volumes:
+      - app-db:/var/lib/postgresql/data
+    ports:
+      - $APP_POSTGRES_DB_PORT:5432
+
   vault:
     image: hashicorp/vault:${VERSION_VAULT:-latest}
     profiles:
@@ -280,5 +298,6 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile
 volumes:
   wallet-api-db:
+  app-db:
   vault_data:
   valkey_data:
