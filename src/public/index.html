@@ -20,53 +20,123 @@
 
     <!-- MAIN CONTENT -->
     <main class="container">
-        <!-- STEP 1: MetaMask Connection -->
-        <section id="section-metamask" class="section active">
-            <div class="card">
-                <h2>🔐 Korak 1: Povežite MetaMask Denarnico</h2>
-                <p>Za nadaljevanje se morate najprej povezati s svojo MetaMask denarnico.</p>
-                
-                <div class="form-group">
-                    <label for="role-select">Izberite vlogo:</label>
-                    <select id="role-select" class="form-control">
-                        <option value="">-- Izbira --</option>
-                        <option value="manufacturer">🏭 Proizvajalec (Manufacturer)</option>
-                        <option value="distributor">📦 Distributor</option>
-                        <option value="pharmacy">💊 Lekarna (Pharmacy)</option>
-                    </select>
+        <!-- PROGRESS INDICATOR -->
+        <div id="progress-container" class="progress-indicator" style="display:none;">
+            <div class="progress-steps">
+                <div class="progress-step active" id="step-1">
+                    <div class="step-number">1</div>
+                    <div class="step-label">MetaMask</div>
                 </div>
-
-                <div class="form-group">
-                    <label for="company-name">Ime Podjetja:</label>
-                    <input type="text" id="company-name" class="form-control" placeholder="npr. Farmacija d.d.">
+                <div class="progress-line"></div>
+                <div class="progress-step" id="step-2">
+                    <div class="step-number">2</div>
+                    <div class="step-label">Registracija</div>
                 </div>
-
-                <div class="form-group">
-                    <label for="company-email">Email:</label>
-                    <input type="email" id="company-email" class="form-control" placeholder="npr. info@farmacija.si">
+                <div class="progress-line"></div>
+                <div class="progress-step" id="step-3">
+                    <div class="step-number">3</div>
+                    <div class="step-label">Nadzorna Plošča</div>
                 </div>
-
-                <button id="btn-connect-metamask" class="btn btn-primary btn-large">
-                    Povežite MetaMask
-                </button>
-                <p id="metamask-error" class="error-message" style="display:none;"></p>
             </div>
-        </section>
+        </div>
 
-        <!-- STEP 2: Walt.id Registration -->
-        <section id="section-walt" class="section" style="display:none;">
+        <!-- UNIFIED: MetaMask Connection + Walt.id Registration -->
+        <section id="section-registration" class="section active">
             <div class="card">
-                <h2>🪪 Korak 2: Registracija v Walt.id</h2>
-                <p>Vaša denarnica je povezana. Sedaj se registrirajte v Walt.id sistem za pridobitev DID.</p>
-                
-                <div id="user-info" class="user-info">
-                    <!-- Will be populated by JS -->
+                <h2>🔐 Registracija v Sistem</h2>
+                <p>Sledite navodilom spodaj za prijavo v sistem.</p>
+
+                <!-- Phase 1: MetaMask Connection -->
+                <div id="phase-1" class="registration-phase active">
+                    <h3>Korak 1: Povežite MetaMask Denarnico</h3>
+                    <p class="phase-description">Kliknite gumb spodaj za povezovanje vaše MetaMask denarnice.</p>
+                    
+                    <button id="btn-connect-metamask" class="btn btn-primary btn-large">
+                        🔌 Povežite MetaMask
+                    </button>
+                    <p id="metamask-error" class="error-message" style="display:none;"></p>
                 </div>
 
-                <button id="btn-register-walt" class="btn btn-primary btn-large">
-                    Registrirajte se v Walt.id
-                </button>
-                <p id="walt-error" class="error-message" style="display:none;"></p>
+                <!-- Phase 2: Fill Details (shown after MetaMask connection) -->
+                <div id="phase-2" class="registration-phase" style="display:none;">
+                    <h3>Korak 2: Izpolnite Podatke</h3>
+                    <p class="phase-description">Vaša denarnica je povezana. Sedaj izpolnite naslednje podatke.</p>
+
+                    <div id="wallet-preview" class="wallet-preview">
+                        <!-- Filled by JS after MetaMask connection -->
+                    </div>
+
+                    <div class="form-group">
+                        <label for="role-select">Izberite vlogo: <span class="required">*</span></label>
+                        <select id="role-select" class="form-control">
+                            <option value="">-- Izbira --</option>
+                            <option value="manufacturer">🏭 Proizvajalec (Manufacturer)</option>
+                            <option value="distributor">📦 Distributor</option>
+                            <option value="pharmacy">💊 Lekarna (Pharmacy)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="company-name">Ime Podjetja: <span class="required">*</span></label>
+                        <input type="text" id="company-name" class="form-control" placeholder="npr. Farmacija d.d.">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="company-email">Email: <span class="required">*</span></label>
+                        <input type="email" id="company-email" class="form-control" placeholder="npr. info@farmacija.si">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="password">Geslo: <span class="required">*</span></label>
+                        <input type="password" id="password" class="form-control password-input" placeholder="Najmanj 8 znakov, velika črka, mala črka, števka, posebni znak">
+                        <div id="password-strength" class="password-strength-indicator">
+                            <div class="strength-bar"></div>
+                            <p class="strength-text"></p>
+                        </div>
+                        <div class="password-requirements">
+                            <p class="requirement-title">Geslo mora vsebovati:</p>
+                            <ul>
+                                <li id="req-length" class="requirement">
+                                    <span class="req-icon">○</span>
+                                    <span class="req-text">Najmanj 8 znakov</span>
+                                </li>
+                                <li id="req-upper" class="requirement">
+                                    <span class="req-icon">○</span>
+                                    <span class="req-text">Najmanj eno veliko črko (A-Z)</span>
+                                </li>
+                                <li id="req-lower" class="requirement">
+                                    <span class="req-icon">○</span>
+                                    <span class="req-text">Najmanj eno malo črko (a-z)</span>
+                                </li>
+                                <li id="req-number" class="requirement">
+                                    <span class="req-icon">○</span>
+                                    <span class="req-text">Najmanj eno števko (0-9)</span>
+                                </li>
+                                <li id="req-special" class="requirement">
+                                    <span class="req-icon">○</span>
+                                    <span class="req-text">Posebni znak (!@#$%^&*)</span>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="password-confirm">Potrdi Geslo: <span class="required">*</span></label>
+                        <input type="password" id="password-confirm" class="form-control" placeholder="Ponovite geslo">
+                        <p id="password-match-error" class="password-match-error" style="display:none;">Gesli se ne ujemata</p>
+                    </div>
+
+                    <button id="btn-register-complete" class="btn btn-primary btn-large">
+                        ✓ Zaključi Registraciju
+                    </button>
+                    <p id="registration-error" class="error-message" style="display:none;"></p>
+
+                    <!-- Loading indicator -->
+                    <div id="registration-loading" style="display:none;" class="loading-indicator">
+                        <div class="spinner"></div>
+                        <p id="loading-status">Registracija v teku...</p>
+                    </div>
+                </div>
             </div>
         </section>
 
@@ -74,7 +144,11 @@
         <section id="section-dashboard" class="section" style="display:none;">
             <div class="card">
                 <h2>📊 Nadzorna Plošča</h2>
-                <p>Dobrodošli! Izbira vam primerna nadzorna plošča:</p>
+                <p>Dobrodošli! Izberite vam primerna nadzorna plošča:</p>
+
+                <div id="dashboard-info" class="dashboard-info" style="margin-bottom: 2rem;">
+                    <!-- User info displayed here -->
+                </div>
                 
                 <div class="dashboard-options">
                     <button id="btn-manufacturer-dashboard" class="dashboard-btn manufacturer-btn" style="display:none;">

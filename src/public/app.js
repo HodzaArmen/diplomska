@@ -1,11 +1,13 @@
 /**
  * app.js
  * Main application logic for MetaMask connection and Walt.id registration
+ * Simplified onboarding with auto-chaining flow
  */
 
 // ===== STATE MANAGEMENT =====
 let currentUser = null;
 let currentSessionId = null;
+let currentWalletAddress = null;
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', () => {
@@ -27,10 +29,10 @@ async function initializeApp() {
             }
         } catch (error) {
             console.log('No active session or session expired');
-            showMetaMaskConnection();
+            showRegistration();
         }
     } else {
-        showMetaMaskConnection();
+        showRegistration();
     }
     
     attachEventListeners();
@@ -40,8 +42,20 @@ function attachEventListeners() {
     // MetaMask Connection
     document.getElementById('btn-connect-metamask').addEventListener('click', connectMetaMask);
     
-    // Walt.id Registration
-    document.getElementById('btn-register-walt').addEventListener('click', registerInWalt);
+    // Complete Registration (combines MetaMask + Walt.id)
+    document.getElementById('btn-register-complete').addEventListener('click', completeRegistration);
+    
+    // Password validation listeners
+    const passwordInput = document.getElementById('password');
+    const confirmPasswordInput = document.getElementById('password-confirm');
+    
+    if (passwordInput) {
+        passwordInput.addEventListener('input', updatePasswordStrength);
+    }
+    
+    if (confirmPasswordInput) {
+        confirmPasswordInput.addEventListener('input', validatePasswordsMatch);
+    }
     
     // Dashboard Selection
     document.getElementById('btn-manufacturer-dashboard').addEventListener('click', () => {
@@ -59,23 +73,50 @@ function attachEventListeners() {
 }
 
 // ===== UI STATE CHANGES =====
-function showMetaMaskConnection() {
-    document.getElementById('section-metamask').classList.add('active');
-    document.getElementById('section-walt').style.display = 'none';
+function showRegistration() {
+    document.getElementById('progress-container').style.display = 'block';
+    document.getElementById('section-registration').style.display = 'block';
+    document.getElementById('section-registration').classList.add('active');
     document.getElementById('section-dashboard').style.display = 'none';
     document.getElementById('btn-logout').style.display = 'none';
+    
+    // Show Phase 1 (MetaMask)
+    showPhase(1);
 }
 
-function showWaltRegistration() {
-    document.getElementById('section-metamask').classList.remove('active');
-    document.getElementById('section-metamask').style.display = 'none';
-    document.getElementById('section-walt').style.display = 'block';
-    document.getElementById('section-walt').classList.add('active');
+function showPhase(phaseNum) {
+    document.getElementById('phase-1').style.display = phaseNum === 1 ? 'block' : 'none';
+    document.getElementById('phase-2').style.display = phaseNum === 2 ? 'block' : 'none';
+    
+    // Update progress indicator
+    document.getElementById('step-1').classList.toggle('active', phaseNum >= 1);
+    document.getElementById('step-1').classList.toggle('completed', phaseNum > 1);
+    document.getElementById('step-2').classList.toggle('active', phaseNum === 2);
+    
+    if (phaseNum === 1) {
+        document.getElementById('step-1').classList.add('active');
+        document.getElementById('step-2').classList.remove('active', 'completed');
+    } else if (phaseNum === 2) {
+        document.getElementById('step-1').classList.add('completed');
+        document.getElementById('step-2').classList.add('active');
+    }
+}
+
+function showDashboardSelection() {
+    document.getElementById('progress-container').style.display = 'none';
+    document.getElementById('section-registration').style.display = 'none';
+    document.getElementById('section-dashboard').style.display = 'block';
+    document.getElementById('section-dashboard').classList.add('active');
     document.getElementById('btn-logout').style.display = 'inline-block';
     
+    // Update progress indicator - all done
+    document.getElementById('step-1').classList.add('completed');
+    document.getElementById('step-2').classList.add('completed');
+    document.getElementById('step-3').classList.add('active', 'completed');
+    
     // Display user info
-    const userInfoDiv = document.getElementById('user-info');
-    userInfoDiv.innerHTML = `
+    const dashboardInfo = document.getElementById('dashboard-info');
+    dashboardInfo.innerHTML = `
         <div class="profile-info">
             <div class="profile-info-item">
                 <div class="profile-info-label">Naslov Denarnice</div>
@@ -89,20 +130,8 @@ function showWaltRegistration() {
                 <div class="profile-info-label">Ime Podjetja</div>
                 <div class="profile-info-value">${currentUser.companyName}</div>
             </div>
-            <div class="profile-info-item">
-                <div class="profile-info-label">Email</div>
-                <div class="profile-info-value">${currentUser.email}</div>
-            </div>
         </div>
     `;
-}
-
-function showDashboardSelection() {
-    document.getElementById('section-metamask').style.display = 'none';
-    document.getElementById('section-walt').style.display = 'none';
-    document.getElementById('section-dashboard').style.display = 'block';
-    document.getElementById('section-dashboard').classList.add('active');
-    document.getElementById('btn-logout').style.display = 'inline-block';
     
     // Show only the appropriate dashboard button
     document.getElementById('btn-manufacturer-dashboard').style.display = 
@@ -128,17 +157,6 @@ async function connectMetaMask() {
     try {
         clearError('metamask-error');
         
-        // Validate inputs
-        const walletAddress = document.getElementById('wallet-address')?.value;
-        const role = document.getElementById('role-select').value;
-        const companyName = document.getElementById('company-name').value;
-        const email = document.getElementById('company-email').value;
-        
-        if (!role || !companyName || !email) {
-            showError('metamask-error', 'Prosimo izpolnite vsa polja');
-            return;
-        }
-        
         // Check for MetaMask
         if (!window.ethereum) {
             showError('metamask-error', 'MetaMask ni inštaliran. Prosimo namestite MetaMask razširitev.');
@@ -149,86 +167,218 @@ async function connectMetaMask() {
         const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
         const connectedAddress = accounts[0];
         
-        // Call backend to register connection
-        const response = await fetch('/api/auth/connect-metamask', {
+        console.log('✓ MetaMask connected:', connectedAddress);
+        
+        // Store wallet address for later use
+        currentWalletAddress = connectedAddress;
+        
+        // Display wallet preview and move to Phase 2
+        const walletPreview = document.getElementById('wallet-preview');
+        walletPreview.innerHTML = `
+            <div class="wallet-info">
+                <p class="label">Povezana Denarnica:</p>
+                <p class="address">${connectedAddress}</p>
+            </div>
+        `;
+        
+        // Show Phase 2
+        showPhase(2);
+        clearError('registration-error');
+        
+    } catch (error) {
+        console.error('MetaMask connection error:', error);
+        showError('metamask-error', error.message || 'Napaka pri povezovanju MetaMaska');
+    }
+}
+
+// ===== PASSWORD VALIDATION FUNCTIONS =====
+function validatePasswordStrength(password) {
+    let strength = 0;
+    const requirements = {
+        length: password.length >= 8,
+        upper: /[A-Z]/.test(password),
+        lower: /[a-z]/.test(password),
+        number: /[0-9]/.test(password),
+        special: /[!@#$%^&*]/.test(password)
+    };
+
+    // Update visual requirements
+    updateRequirement('req-length', requirements.length);
+    updateRequirement('req-upper', requirements.upper);
+    updateRequirement('req-lower', requirements.lower);
+    updateRequirement('req-number', requirements.number);
+    updateRequirement('req-special', requirements.special);
+
+    // Calculate strength
+    for (let key in requirements) {
+        if (requirements[key]) strength++;
+    }
+
+    return { strength, requirements, allMet: strength === 5 };
+}
+
+function updateRequirement(id, met) {
+    const element = document.getElementById(id);
+    if (element) {
+        if (met) {
+            element.classList.add('met');
+        } else {
+            element.classList.remove('met');
+        }
+    }
+}
+
+function updatePasswordStrength() {
+    const password = document.getElementById('password').value;
+    const { strength, allMet } = validatePasswordStrength(password);
+    
+    const strengthBar = document.querySelector('.strength-bar');
+    const strengthText = document.querySelector('.strength-text');
+    
+    if (password.length === 0) {
+        strengthBar.className = 'strength-bar';
+        strengthText.className = 'strength-text';
+        strengthText.textContent = '';
+        return;
+    }
+
+    const strengthLevels = ['weak', 'weak', 'fair', 'good', 'strong', 'strong'];
+    const strengthLabels = ['Šibko', 'Šibko', 'Dovolj', 'Dobro', 'Zelo Dobro', 'Zelo Dobro'];
+    
+    const level = strengthLevels[strength];
+    const label = strengthLabels[strength];
+    
+    strengthBar.className = `strength-bar ${level}`;
+    strengthText.className = `strength-text ${level}`;
+    strengthText.textContent = label;
+}
+
+function validatePasswordsMatch() {
+    const password = document.getElementById('password').value;
+    const confirm = document.getElementById('password-confirm').value;
+    const error = document.getElementById('password-match-error');
+    
+    if (confirm && password !== confirm) {
+        error.style.display = 'block';
+        return false;
+    } else {
+        error.style.display = 'none';
+        return true;
+    }
+}
+
+/**
+ * Complete Registration - Chains MetaMask connection with Walt.id registration
+ * Automatically calls both endpoints without requiring separate user action
+ */
+async function completeRegistration() {
+    try {
+        clearError('registration-error');
+        
+        // Validate inputs
+        const role = document.getElementById('role-select').value;
+        const companyName = document.getElementById('company-name').value;
+        const email = document.getElementById('company-email').value;
+        const password = document.getElementById('password').value;
+        const passwordConfirm = document.getElementById('password-confirm').value;
+        
+        if (!currentWalletAddress) {
+            showError('registration-error', 'Napaka: Denarnica ni povezana. Prosimo ponovno povežite MetaMask.');
+            return;
+        }
+        
+        if (!role || !companyName || !email || !password || !passwordConfirm) {
+            showError('registration-error', 'Prosimo izpolnite vsa polja');
+            return;
+        }
+
+        // Validate password strength
+        const { allMet } = validatePasswordStrength(password);
+        if (!allMet) {
+            showError('registration-error', 'Geslo ne izpolnjuje vseh zahtev');
+            return;
+        }
+
+        // Validate password match
+        if (!validatePasswordsMatch()) {
+            showError('registration-error', 'Gesli se ne ujemata');
+            return;
+        }
+        
+        // Show loading state
+        showLoading(true, 'Povezujem denarnico...');
+        
+        // Step 1: Connect MetaMask on backend
+        console.log('📝 Step 1: Registering MetaMask connection on backend...');
+        const metamaskResponse = await fetch('/api/auth/connect-metamask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                walletAddress: connectedAddress,
+                walletAddress: currentWalletAddress,
                 role,
                 companyName,
                 email
             })
         });
         
-        if (!response.ok) {
-            const errorData = await response.json();
+        if (!metamaskResponse.ok) {
+            const errorData = await metamaskResponse.json();
             throw new Error(errorData.error || 'Napaka pri povezovanju MetaMaska');
         }
         
-        const data = await response.json();
+        const metamaskData = await metamaskResponse.json();
         
-        if (data.success) {
-            currentSessionId = data.sessionId;
-            currentUser = data.user;
-            
-            // Store session
-            sessionStorage.setItem('sessionId', currentSessionId);
-            sessionStorage.setItem('user', JSON.stringify(currentUser));
-            
-            console.log('✓ MetaMask connected:', currentUser);
-            showWaltRegistration();
-        }
-    } catch (error) {
-        console.error('MetaMask connection error:', error);
-        showError('metamask-error', error.message);
-    }
-}
-
-async function registerInWalt() {
-    try {
-        clearError('walt-error');
-        
-        if (!currentSessionId) {
-            showError('walt-error', 'Napaka: Seja ni aktivna. Prosimo ponovno se povežite s MetaMaskom.');
-            return;
+        if (!metamaskData.success) {
+            throw new Error(metamaskData.error || 'Napaka pri povezovanju MetaMaska');
         }
         
-        // Disable button during request
-        const btn = document.getElementById('btn-register-walt');
-        btn.disabled = true;
-        btn.textContent = 'Registriranje...';
+        currentSessionId = metamaskData.sessionId;
+        currentUser = metamaskData.user;
         
-        const response = await fetch('/api/auth/register-walt', {
+        // Step 2: Register in Walt.id with password
+        console.log('📝 Step 2: Registering in Walt.id...');
+        updateLoadingStatus('Registracija v Walt.id...');
+        
+        const waltResponse = await fetch('/api/auth/register-walt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                sessionId: currentSessionId
+                sessionId: currentSessionId,
+                password: password
             })
         });
         
-        if (!response.ok) {
-            const errorData = await response.json();
+        if (!waltResponse.ok) {
+            const errorData = await waltResponse.json();
             throw new Error(errorData.error || 'Napaka pri registraciji v Walt.id');
         }
         
-        const data = await response.json();
+        const waltData = await waltResponse.json();
         
-        if (data.success) {
-            // Update user with DID and wallet ID
-            currentUser = data.user;
-            sessionStorage.setItem('user', JSON.stringify(currentUser));
-            
-            console.log('✓ Registered in Walt.id:', data.user);
-            showDashboardSelection();
+        if (!waltData.success) {
+            throw new Error(waltData.error || 'Napaka pri registraciji v Walt.id');
         }
+        
+        // Update user with DID and wallet ID
+        currentUser = waltData.user;
+        
+        // Store session
+        sessionStorage.setItem('sessionId', currentSessionId);
+        sessionStorage.setItem('user', JSON.stringify(currentUser));
+        
+        console.log('✓ Complete registration successful:', currentUser);
+        
+        // Hide loading and show success
+        updateLoadingStatus('Pripravljeno! ✓');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        showLoading(false);
+        showDashboardSelection();
+        
     } catch (error) {
-        console.error('Walt.id registration error:', error);
-        showError('walt-error', error.message);
-    } finally {
-        const btn = document.getElementById('btn-register-walt');
-        btn.disabled = false;
-        btn.textContent = 'Registrirajte se v Walt.id';
+        console.error('Registration error:', error);
+        showLoading(false);
+        showError('registration-error', error.message);
     }
 }
 
@@ -255,14 +405,16 @@ async function logout() {
         sessionStorage.removeItem('user');
         currentUser = null;
         currentSessionId = null;
+        currentWalletAddress = null;
         
         // Reset form
         document.getElementById('role-select').value = '';
         document.getElementById('company-name').value = '';
         document.getElementById('company-email').value = '';
+        document.getElementById('wallet-preview').innerHTML = '';
         
-        // Show MetaMask connection
-        showMetaMaskConnection();
+        // Show registration
+        showRegistration();
     } catch (error) {
         console.error('Logout error:', error);
     }
@@ -288,6 +440,25 @@ function clearError(elementId) {
     const element = document.getElementById(elementId);
     element.textContent = '';
     element.style.display = 'none';
+}
+
+function showLoading(show, initialStatus = 'Registracija v teku...') {
+    const loadingDiv = document.getElementById('registration-loading');
+    const statusText = document.getElementById('loading-status');
+    
+    if (show) {
+        statusText.textContent = initialStatus;
+        loadingDiv.style.display = 'block';
+        document.getElementById('btn-register-complete').disabled = true;
+    } else {
+        loadingDiv.style.display = 'none';
+        document.getElementById('btn-register-complete').disabled = false;
+        statusText.textContent = 'Registracija v teku...';
+    }
+}
+
+function updateLoadingStatus(status) {
+    document.getElementById('loading-status').textContent = status;
 }
 
 // ===== METAMASK LISTENER =====
