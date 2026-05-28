@@ -21,14 +21,30 @@ async function initializeApp() {
     const sessionId = sessionStorage.getItem('sessionId');
     if (sessionId) {
         try {
+            // Validate session with backend
+            const validateResponse = await fetch(`/api/auth/validate-session?sessionId=${encodeURIComponent(sessionId)}`);
+            if (!validateResponse.ok || !(await validateResponse.json()).valid) {
+                // Session is invalid or expired - clear it
+                sessionStorage.removeItem('sessionId');
+                sessionStorage.removeItem('user');
+                showRegistration();
+                return;
+            }
+            
             const userInfo = await getUserInfo(sessionId);
             if (userInfo.user) {
                 currentUser = userInfo.user;
                 currentSessionId = sessionId;
                 showDashboardSelection();
+            } else {
+                sessionStorage.removeItem('sessionId');
+                sessionStorage.removeItem('user');
+                showRegistration();
             }
         } catch (error) {
-            console.log('No active session or session expired');
+            console.log('No active session or session expired:', error.message);
+            sessionStorage.removeItem('sessionId');
+            sessionStorage.removeItem('user');
             showRegistration();
         }
     } else {
@@ -400,23 +416,36 @@ async function logout() {
             });
         }
         
-        // Clear session
-        sessionStorage.removeItem('sessionId');
-        sessionStorage.removeItem('user');
+        // Clear all session storage
+        sessionStorage.clear();
+        
+        // Reset all state
         currentUser = null;
         currentSessionId = null;
         currentWalletAddress = null;
         
-        // Reset form
+        // Reset all form fields
         document.getElementById('role-select').value = '';
         document.getElementById('company-name').value = '';
         document.getElementById('company-email').value = '';
+        document.getElementById('password').value = '';
+        document.getElementById('password-confirm').value = '';
         document.getElementById('wallet-preview').innerHTML = '';
+        document.getElementById('registration-error').style.display = 'none';
+        document.getElementById('metamask-error').style.display = 'none';
         
         // Show registration
         showRegistration();
+        
+        console.log('✓ Logged out successfully');
     } catch (error) {
         console.error('Logout error:', error);
+        // Still clear local state even if server logout fails
+        sessionStorage.clear();
+        currentUser = null;
+        currentSessionId = null;
+        currentWalletAddress = null;
+        showRegistration();
     }
 }
 

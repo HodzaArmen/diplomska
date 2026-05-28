@@ -1,5 +1,5 @@
 /**
- * server-new.js
+ * server.js
  * Main Express server with MetaMask authentication and role-based dashboards
  * Supports multiple users/accounts with different roles: Manufacturer, Distributor, Pharmacy
  * Uses PostgreSQL for persistent data storage
@@ -9,6 +9,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const crypto = require('crypto');
 const axios = require('axios');
 const { ethers } = require('ethers');
 const { Pool } = require('pg');
@@ -17,26 +18,48 @@ const app = express();
 
 // ===== MIDDLEWARE =====
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ===== CONFIGURATION =====
 const WALT_API = process.env.WALT_ID_API_URL;
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 3000;
+const SESSION_EXPIRY_HOURS = 168; // 7 days - NOTE: Keep in sync with SQL INTERVAL '7 days'
+const API_TIMEOUT_MS = 30000;
 
 // ===== DATABASE CONFIGURATION =====
 const pool = new Pool({
     user: process.env.APP_DB_USERNAME,
     password: process.env.APP_DB_PASSWORD,
     host: process.env.APP_DB_HOST,
-    port: process.env.APP_POSTGRES_DB_PORT,
+    port: process.env.APP_POSTGRES_DB_PORT || 5433,
     database: process.env.APP_DB_NAME 
 });
 
-// ===== IN-MEMORY SESSION CACHE (for quick lookups) =====
-const sessionCache = new Map(); // sessionId -> userRecord
+// ===== INPUT VALIDATION HELPERS =====
+function isValidEthereumAddress(address) {
+    return /^0x[a-fA-F0-9]{40}$/.test(address);
+}
+
+function isValidEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function isValidRole(role) {
+    return ['manufacturer', 'distributor', 'pharmacy'].includes(role.toLowerCase());
+}
+
+function sanitizeInput(input) {
+    if (typeof input !== 'string') return '';
+    return input.trim().substring(0, 255);
+}
+
+function generateSecureSessionId() {
+    return `sess_${crypto.randomBytes(32).toString('hex')}`;
+}
 
 // ===== HELPER: Walt.id API calls =====
 async function callWaltAPI(method, endpoint, data = null, sessionCookie = null) {
@@ -46,7 +69,8 @@ async function callWaltAPI(method, endpoint, data = null, sessionCookie = null) 
             url: `${WALT_API}${endpoint}`,
             headers: {
                 'Content-Type': 'application/json'
-            }
+            },
+            timeout: API_TIMEOUT_MS
         };
 
         if (sessionCookie) {
@@ -87,6 +111,20 @@ function extractDidValue(response) {
     return null;
 }
 
+// ===== HELPER: Validate and clean session =====
+async function isSessionValid(sessionId) {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM sessions WHERE session_id = $1 AND expires_at > CURRENT_TIMESTAMP',
+            [sessionId]
+        );
+        return result.rows.length > 0;
+    } catch (error) {
+        console.error('Session validation error:', error.message);
+        return false;
+    }
+}
+
 // ===== ENDPOINTS =====
 
 // 1. METAMASK CONNECTION - User connects their MetaMask wallet
@@ -94,16 +132,29 @@ app.post('/api/auth/connect-metamask', async (req, res) => {
     try {
         const { walletAddress, role, companyName, email } = req.body;
 
+        // Input validation
         if (!walletAddress || !role || !companyName || !email) {
             return res.status(400).json({ error: 'Missing required fields: walletAddress, role, companyName, email' });
         }
 
-        if (!['manufacturer', 'distributor', 'pharmacy'].includes(role)) {
+        if (!isValidEthereumAddress(walletAddress)) {
+            return res.status(400).json({ error: 'Invalid wallet address format' });
+        }
+
+        if (!isValidRole(role)) {
             return res.status(400).json({ error: 'Invalid role. Must be: manufacturer, distributor, or pharmacy' });
         }
 
+        if (!isValidEmail(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
+
+        const normalizedAddress = walletAddress.toLowerCase();
+        const sanitizedCompanyName = sanitizeInput(companyName);
+        const sanitizedEmail = sanitizeInput(email);
+
         // Check if wallet already connected
-        const existingUser = await pool.query('SELECT * FROM users WHERE wallet_address = $1', [walletAddress.toLowerCase()]);
+        const existingUser = await pool.query('SELECT * FROM users WHERE wallet_address = $1', [normalizedAddress]);
         
         if (existingUser.rows.length > 0) {
             const user = existingUser.rows[0];
@@ -121,8 +172,8 @@ app.post('/api/auth/connect-metamask', async (req, res) => {
             });
         }
 
-        // Create new user session
-        const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // Create new user session with cryptographically secure random ID
+        const sessionId = generateSecureSessionId();
         
         // Insert user into database
         const newUser = await pool.query(
@@ -130,13 +181,17 @@ app.post('/api/auth/connect-metamask', async (req, res) => {
              (wallet_address, role, email, company_name, session_id) 
              VALUES ($1, $2, $3, $4, $5) 
              RETURNING *`,
-            [walletAddress.toLowerCase(), role, email, companyName, sessionId]
+            [normalizedAddress, role.toLowerCase(), sanitizedEmail, sanitizedCompanyName, sessionId]
         );
 
         const userRecord = newUser.rows[0];
         
-        // Cache session
-        sessionCache.set(sessionId, userRecord);
+        // Create session record
+        await pool.query(
+            `INSERT INTO sessions (session_id, wallet_address, expires_at)
+             VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '7 days')`,
+            [sessionId, normalizedAddress]
+        );
 
         res.json({
             success: true,
@@ -160,6 +215,11 @@ app.post('/api/auth/register-walt', async (req, res) => {
         const { sessionId, password } = req.body;
 
         if (!sessionId) {
+            return res.status(401).json({ error: 'Invalid or expired session' });
+        }
+
+        // Validate session
+        if (!(await isSessionValid(sessionId))) {
             return res.status(401).json({ error: 'Invalid or expired session' });
         }
 
@@ -261,7 +321,7 @@ app.post('/api/auth/register-walt', async (req, res) => {
         // Update user record in database
         const updatedUser = await pool.query(
             `UPDATE users 
-             SET did = $1, wallet_id = $2, walt_id_registered_at = CURRENT_TIMESTAMP 
+             SET did = $1, wallet_id = $2, walt_id_registered_at = CURRENT_TIMESTAMP, last_active = CURRENT_TIMESTAMP
              WHERE session_id = $3 
              RETURNING *`,
             [did, walletId, sessionId]
@@ -269,8 +329,11 @@ app.post('/api/auth/register-walt', async (req, res) => {
 
         const updatedUserRecord = updatedUser.rows[0];
         
-        // Update cache
-        sessionCache.set(sessionId, updatedUserRecord);
+        // Update session activity
+        await pool.query(
+            'UPDATE sessions SET last_activity = CURRENT_TIMESTAMP WHERE session_id = $1',
+            [sessionId]
+        );
 
         console.log(`✓ User registered in Walt.id: ${waltEmail}`);
         console.log(`✓ DID: ${did}`);
@@ -302,23 +365,28 @@ app.get('/api/auth/user-info', async (req, res) => {
             return res.status(401).json({ error: 'Invalid or expired session' });
         }
 
-        // Try cache first
-        let userRecord = sessionCache.get(sessionId);
-        
-        // If not in cache, fetch from database
-        if (!userRecord) {
-            const userResult = await pool.query(
-                'SELECT * FROM users WHERE session_id = $1',
-                [sessionId]
-            );
-
-            if (userResult.rows.length === 0) {
-                return res.status(401).json({ error: 'Invalid or expired session' });
-            }
-
-            userRecord = userResult.rows[0];
-            sessionCache.set(sessionId, userRecord);
+        // Validate session
+        if (!(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Invalid or expired session' });
         }
+
+        // Fetch from database
+        const userResult = await pool.query(
+            'SELECT * FROM users WHERE session_id = $1',
+            [sessionId]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(401).json({ error: 'Invalid or expired session' });
+        }
+
+        const userRecord = userResult.rows[0];
+        
+        // Update last activity
+        await pool.query(
+            'UPDATE sessions SET last_activity = CURRENT_TIMESTAMP WHERE session_id = $1',
+            [sessionId]
+        );
 
         res.json({
             success: true,
@@ -345,8 +413,8 @@ app.post('/api/auth/logout', async (req, res) => {
         const { sessionId } = req.body;
 
         if (sessionId) {
-            sessionCache.delete(sessionId);
-            // Session stays in database for audit purposes but is effectively inactive
+            // Delete session from database
+            await pool.query('DELETE FROM sessions WHERE session_id = $1', [sessionId]);
         }
 
         res.json({ success: true, message: 'Logged out successfully' });
@@ -356,7 +424,29 @@ app.post('/api/auth/logout', async (req, res) => {
     }
 });
 
-// 5. HEALTH CHECK
+// 5. VALIDATE SESSION - Check if session is still valid
+app.get('/api/auth/validate-session', async (req, res) => {
+    try {
+        const { sessionId } = req.query;
+
+        if (!sessionId) {
+            return res.status(401).json({ error: 'Invalid or expired session', valid: false });
+        }
+
+        const isValid = await isSessionValid(sessionId);
+        
+        if (!isValid) {
+            return res.status(401).json({ error: 'Invalid or expired session', valid: false });
+        }
+
+        res.json({ valid: true });
+    } catch (error) {
+        console.error('Session validation error:', error.message);
+        res.status(500).json({ error: error.message, valid: false });
+    }
+});
+
+// 6. HEALTH CHECK
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
@@ -369,18 +459,29 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// ===== ERROR HANDLING =====
+app.use((err, req, res, next) => {
+    console.error('Unhandled error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+});
+
 // ===== START SERVER =====
 async function startServer() {
     try {
+        // Test database connection
+        await pool.query('SELECT NOW()');
+        console.log('✓ Database connection successful');
+        
         app.listen(PORT, () => {
             console.log(`\n${'='.repeat(60)}`);
-            console.log(`\nServer running on http://localhost:${PORT}`);
-            console.log(`Walt.id API: ${WALT_API}`);
-            console.log(`Ethereum RPC: ${SEPOLIA_RPC_URL ? 'configured' : 'NOT configured'}`);
-            console.log(`Contract: ${CONTRACT_ADDRESS || 'NOT configured'}`);
-            console.log(`Database: Connected (app-postgres on port ${process.env.APP_POSTGRES_DB_PORT || 5433})`);
-            console.log(`Pg-admin: http://localhost:5050 (user: admin@admin.com, pass: admin)`);
-            console.log('\n');
+            console.log(`✓ Server running on http://localhost:${PORT}`);
+            console.log(`✓ Walt.id API: ${WALT_API}`);
+            console.log(`✓ Ethereum RPC: ${SEPOLIA_RPC_URL ? 'configured' : 'NOT configured'}`);
+            console.log(`✓ Contract: ${CONTRACT_ADDRESS || 'NOT configured'}`);
+            console.log(`✓ Database: app-postgres on port ${process.env.APP_POSTGRES_DB_PORT || 5433}`);
+            console.log(`✓ PgAdmin: http://localhost:${process.env.PG_ADMIN_PORT || 5050}`);
+            console.log(`✓ Session expiry: ${SESSION_EXPIRY_HOURS} hours`);
+            console.log('\n' + '='.repeat(60) + '\n');
         });
     } catch (error) {
         console.error('Failed to start server:', error.message);

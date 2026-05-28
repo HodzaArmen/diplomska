@@ -23,6 +23,22 @@ async function initializeDashboard() {
             return;
         }
         
+        // Validate session with backend
+        try {
+            const validateResponse = await fetch(`/api/auth/validate-session?sessionId=${encodeURIComponent(currentSessionId)}`);
+            if (!validateResponse.ok || !(await validateResponse.json()).valid) {
+                // Session is invalid or expired - clear it and redirect
+                sessionStorage.clear();
+                window.location.href = '/';
+                return;
+            }
+        } catch (error) {
+            console.error('Session validation error:', error);
+            sessionStorage.clear();
+            window.location.href = '/';
+            return;
+        }
+        
         currentUser = JSON.parse(userJson);
         
         // Check if user is pharmacy
@@ -40,6 +56,7 @@ async function initializeDashboard() {
     } catch (error) {
         console.error('Initialization error:', error);
         alert('Napaka pri inicijalizaciji nadzorne plošče');
+        sessionStorage.clear();
         window.location.href = '/';
     }
 }
@@ -73,8 +90,21 @@ function updateWalletStatus() {
 
 function attachEventListeners() {
     // Back to home
-    document.getElementById('btn-back-home').addEventListener('click', () => {
-        window.location.href = '/';
+    document.getElementById('btn-back-home').addEventListener('click', async () => {
+        try {
+            if (currentSessionId) {
+                await fetch('/api/auth/logout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: currentSessionId })
+                });
+            }
+        } catch (error) {
+            console.error('Logout error:', error);
+        } finally {
+            sessionStorage.clear();
+            window.location.href = '/';
+        }
     });
     
     // Verify medicine
