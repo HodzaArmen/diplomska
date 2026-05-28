@@ -185,9 +185,53 @@ services:
       POSTGRES_USER: $APP_DB_USERNAME
       POSTGRES_PASSWORD: $APP_DB_PASSWORD
     volumes:
-      - app-db:/var/lib/postgresql/data
+      - app-db:/var/lib/postgresql
+      - ./src/db/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - $APP_POSTGRES_DB_PORT:5432
+
+  pg-admin:
+    image: dpage/pgadmin4
+    container_name: pg-admin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - app-postgres
+    restart: unless-stopped
+
+  app:
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    container_name: app
+    depends_on:
+      app-postgres:
+        condition: service_healthy
+    environment:
+      - APP_DB_HOST=app-postgres
+      - APP_DB_USERNAME=$APP_DB_USERNAME
+      - APP_DB_PASSWORD=$APP_DB_PASSWORD
+      - APP_DB_NAME=$APP_DB_NAME
+      - APP_POSTGRES_DB_PORT=5432
+      - PORT=3000
+      - WALT_ID_API_URL=${WALT_ID_API_URL:-http://wallet-api:7001/wallet-api}
+      - SEPOLIA_RPC_URL=${SEPOLIA_RPC_URL:-}
+      - CONTRACT_ADDRESS=${CONTRACT_ADDRESS:-}
+    ports:
+      - "3000:3000"
+    restart: always
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    volumes:
+      - ./src:/app
+      - /app/node_modules
 
   vault:
     image: hashicorp/vault:${VERSION_VAULT:-latest}

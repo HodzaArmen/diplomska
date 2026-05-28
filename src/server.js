@@ -21,85 +21,22 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ===== CONFIGURATION =====
-const WALT_API = process.env.WALT_ID_API_URL || 'http://localhost:7001/wallet-api';
+const WALT_API = process.env.WALT_ID_API_URL;
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT;
 
 // ===== DATABASE CONFIGURATION =====
 const pool = new Pool({
-    user: process.env.APP_DB_USERNAME || 'app_user',
-    password: process.env.APP_DB_PASSWORD || 'app_password_secure',
-    host: process.env.APP_DB_HOST || 'localhost',
-    port: process.env.APP_POSTGRES_DB_PORT || 5433,
-    database: process.env.APP_DB_NAME || 'diplomska_app'
+    user: process.env.APP_DB_USERNAME,
+    password: process.env.APP_DB_PASSWORD,
+    host: process.env.APP_DB_HOST,
+    port: process.env.APP_POSTGRES_DB_PORT,
+    database: process.env.APP_DB_NAME 
 });
-
-// ===== DATABASE INITIALIZATION =====
-async function initializeDatabase() {
-    try {
-        // Create users table if not exists
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                wallet_address VARCHAR(255) UNIQUE NOT NULL,
-                role VARCHAR(50) NOT NULL,
-                email VARCHAR(255) NOT NULL,
-                company_name VARCHAR(255) NOT NULL,
-                wallet_connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                walt_id_registered_at TIMESTAMP,
-                did VARCHAR(255),
-                wallet_id VARCHAR(255),
-                session_id VARCHAR(255) UNIQUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-        // Create sessions table if not exists
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS sessions (
-                id SERIAL PRIMARY KEY,
-                session_id VARCHAR(255) UNIQUE NOT NULL,
-                wallet_address VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
-                FOREIGN KEY (wallet_address) REFERENCES users(wallet_address) ON DELETE CASCADE
-            )
-        `);
-
-        console.log('✓ Database tables initialized successfully');
-    } catch (error) {
-        console.error('Database initialization error:', error.message);
-        throw error;
-    }
-}
 
 // ===== IN-MEMORY SESSION CACHE (for quick lookups) =====
 const sessionCache = new Map(); // sessionId -> userRecord
-
-// ===== PASSWORD VALIDATION =====
-function validatePassword(password) {
-    if (!password) {
-        return { valid: false, error: 'Geslo je obvezno' };
-    }
-    if (password.length < 8) {
-        return { valid: false, error: 'Geslo mora imeti najmanj 8 znakov' };
-    }
-    if (!/[A-Z]/.test(password)) {
-        return { valid: false, error: 'Geslo mora vsebovati vsaj eno veliko črko' };
-    }
-    if (!/[a-z]/.test(password)) {
-        return { valid: false, error: 'Geslo mora vsebovati vsaj eno malo črko' };
-    }
-    if (!/[0-9]/.test(password)) {
-        return { valid: false, error: 'Geslo mora vsebovati vsaj eno števko' };
-    }
-    if (!/[!@#$%^&*]/.test(password)) {
-        return { valid: false, error: 'Geslo mora vsebovati vsaj en posebni znak (!@#$%^&*)' };
-    }
-    return { valid: true };
-}
 
 // ===== HELPER: Walt.id API calls =====
 async function callWaltAPI(method, endpoint, data = null, sessionCookie = null) {
@@ -226,12 +163,6 @@ app.post('/api/auth/register-walt', async (req, res) => {
             return res.status(401).json({ error: 'Invalid or expired session' });
         }
 
-        // Validate password
-        const passwordValidation = validatePassword(password);
-        if (!passwordValidation.valid) {
-            return res.status(400).json({ error: passwordValidation.error });
-        }
-
         // Get user from database
         const userResult = await pool.query(
             'SELECT * FROM users WHERE session_id = $1',
@@ -263,6 +194,7 @@ app.post('/api/auth/register-walt', async (req, res) => {
         console.log(`[Walt.id] Registering: ${waltEmail}`);
 
         let registerResult;
+        let isNewUser = false;
         try {
             // Try to register with user-provided password
             registerResult = await callWaltAPI('POST', '/auth/register', {
@@ -271,21 +203,31 @@ app.post('/api/auth/register-walt', async (req, res) => {
                 email: waltEmail,
                 password: password
             });
+            isNewUser = true;
         } catch (registerError) {
-            // If already registered, try to login with the provided password
+            // If already registered, that's fine - we'll just login
             if (registerError?.response?.status === 409) {
-                console.log('[Walt.id] User already exists, logging in...');
-                registerResult = await callWaltAPI('POST', '/auth/login', {
-                    type: 'email',
-                    email: waltEmail,
-                    password: password
-                });
+                console.log('[Walt.id] User already exists, will login...');
             } else {
                 throw registerError;
             }
         }
 
-        let sessionCookie = registerResult.cookie;
+        // After registration (new or existing user), must login to get session cookie
+        // because /auth/register doesn't return a session cookie
+        const loginResult = await callWaltAPI('POST', '/auth/login', {
+            type: 'email',
+            email: waltEmail,
+            password: password
+        });
+
+        let sessionCookie = loginResult.cookie;
+
+        if (isNewUser) {
+            console.log(`✓ Walt.id user created: ${waltEmail}`);
+        }
+        console.log(`✓ Walt.id session established`);
+
 
         // Get wallet ID
         let walletId;
@@ -430,24 +372,14 @@ app.get('/api/health', (req, res) => {
 // ===== START SERVER =====
 async function startServer() {
     try {
-        // Initialize database
-        await initializeDatabase();
-        
         app.listen(PORT, () => {
             console.log(`\n${'='.repeat(60)}`);
-            console.log(`  Supply Chain App - Multi-Account MetaMask Auth`);
-            console.log(`${'='.repeat(60)}`);
-            console.log(`\n✓ Server running on http://localhost:${PORT}`);
-            console.log(`✓ Walt.id API: ${WALT_API}`);
-            console.log(`✓ Ethereum RPC: ${SEPOLIA_RPC_URL ? 'configured' : 'NOT configured'}`);
-            console.log(`✓ Contract: ${CONTRACT_ADDRESS || 'NOT configured'}`);
-            console.log(`✓ Database: Connected (app-postgres on port ${process.env.APP_POSTGRES_DB_PORT || 5433})`);
-            console.log(`\nAPI Endpoints:`);
-            console.log(`  POST   /api/auth/connect-metamask   - Connect MetaMask wallet`);
-            console.log(`  POST   /api/auth/register-walt      - Register in Walt.id (with password)`);
-            console.log(`  GET    /api/auth/user-info          - Get current user info`);
-            console.log(`  POST   /api/auth/logout             - Logout`);
-            console.log(`  GET    /api/health                  - Health check`);
+            console.log(`\nServer running on http://localhost:${PORT}`);
+            console.log(`Walt.id API: ${WALT_API}`);
+            console.log(`Ethereum RPC: ${SEPOLIA_RPC_URL ? 'configured' : 'NOT configured'}`);
+            console.log(`Contract: ${CONTRACT_ADDRESS || 'NOT configured'}`);
+            console.log(`Database: Connected (app-postgres on port ${process.env.APP_POSTGRES_DB_PORT || 5433})`);
+            console.log(`Pg-admin: http://localhost:5050 (user: admin@admin.com, pass: admin)`);
             console.log('\n');
         });
     } catch (error) {
