@@ -123,11 +123,15 @@ async function loadIncomingDeliveries() {
                             <td>${escapeHtml(d.medicine_name)}</td>
                             <td>${escapeHtml(d.batch_number)}</td>
                             <td>${d.quantity}</td>
-                            <td>${escapeHtml(d.expiry_date)}</td>
+                            <td>${formatDisplayDate(d.expiry_date)}</td>
                             <td><span class="badge badge-warning">${escapeHtml(d.status)}</span></td>
                             <td>
                                 <button class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">✓ Sprejmi</button>
-                                <button class="btn-small btn-view" data-medicine-id="${escapeHtml(d.medicine_id)}">👁️ Pregled</button>
+                                <button class="btn-small btn-view"
+                                    data-medicine-id="${escapeHtml(d.medicine_id)}"
+                                    data-delivery-id="${escapeHtml(d.delivery_id)}">
+                                    👁️ Pregled
+                                </button>
                             </td>
                         </tr>
                     `).join('')}
@@ -140,7 +144,9 @@ async function loadIncomingDeliveries() {
         });
 
         listDiv.querySelectorAll('.btn-view').forEach(btn => {
-            btn.addEventListener('click', () => viewMedicineDetails(btn.dataset.medicineId));
+            btn.addEventListener('click', () => {
+                viewMedicineDetails(btn.dataset.medicineId, btn.dataset.deliveryId || null);
+            });
         });
     } catch (error) {
         console.error('Error loading deliveries:', error);
@@ -173,9 +179,14 @@ async function receiveDelivery(deliveryId) {
     }
 }
 
-async function viewMedicineDetails(medicineId) {
+async function viewMedicineDetails(medicineId, deliveryId = null) {
     try {
-        const response = await fetch(`/api/pharmacy/medicine-details/${encodeURIComponent(medicineId)}?sessionId=${encodeURIComponent(currentSessionId)}`);
+        let url = `/api/pharmacy/medicine-details/${encodeURIComponent(medicineId)}?sessionId=${encodeURIComponent(currentSessionId)}`;
+        if (deliveryId) {
+            url += `&deliveryId=${encodeURIComponent(deliveryId)}`;
+        }
+
+        const response = await fetch(url);
         if (!response.ok) throw new Error('Napaka pri nalaganju podatkov zdravila');
 
         const data = await response.json();
@@ -190,6 +201,13 @@ async function viewMedicineDetails(medicineId) {
     }
 }
 
+function formatDisplayDate(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+    return date.toLocaleDateString('sl-SI');
+}
+
 function displayMedicineVisualizer(medicine) {
     const visualizerDiv = document.getElementById('medicine-visualizer');
     visualizerDiv.style.display = 'block';
@@ -198,8 +216,14 @@ function displayMedicineVisualizer(medicine) {
     const historyHtml = history.length === 0
         ? '<p class="text-muted">Ni zgodovine.</p>'
         : `<ul>${history.map(h => `
-            <li><strong>${escapeHtml(h.action)}</strong> — ${escapeHtml(h.actorRole || '')} (${new Date(h.timestamp).toLocaleString('sl-SI')})</li>
+            <li><strong>${escapeHtml(h.actionLabel || h.action)}</strong> — ${escapeHtml(h.actorRole || '')} (${new Date(h.timestamp).toLocaleString('sl-SI')})</li>
         `).join('')}</ul>`;
+
+    const totalQty = medicine.totalManufacturedQuantity ?? medicine.quantity;
+    const receivedQty = medicine.receivedQuantity ?? medicine.quantity;
+    const quantityNote = receivedQty !== totalQty
+        ? `${receivedQty} enot (prejeto v lekarni) / ${totalQty} skupaj proizvedenih`
+        : `${receivedQty} enot`;
 
     visualizerDiv.innerHTML = `
         <div class="visualizer-container">
@@ -207,17 +231,17 @@ function displayMedicineVisualizer(medicine) {
             <div class="medicine-info-grid">
                 <div class="info-card"><strong>ID</strong><p>${escapeHtml(medicine.medicineId)}</p></div>
                 <div class="info-card"><strong>Serijska</strong><p>${escapeHtml(medicine.batchNumber)}</p></div>
-                <div class="info-card"><strong>Količina</strong><p>${medicine.quantity} enot</p></div>
-                <div class="info-card"><strong>Rok</strong><p>${escapeHtml(medicine.expiryDate)}</p></div>
+                <div class="info-card"><strong>Količina</strong><p>${quantityNote}</p></div>
+                <div class="info-card"><strong>Rok</strong><p>${formatDisplayDate(medicine.expiryDate)}</p></div>
                 <div class="info-card"><strong>Proizvajalec</strong><p>${escapeHtml(medicine.manufacturerName)}</p></div>
                 <div class="info-card"><strong>Status</strong><p>${escapeHtml(medicine.blockchainStatus)}</p></div>
             </div>
             <h4>📦 Pot dobave</h4>
             ${historyHtml}
-            <h4>⛓️ Blockchain</h4>
+            <h4>⛓️ Blockchain & IPFS</h4>
             <p><strong>IPFS:</strong> <code>${escapeHtml(medicine.ipfsHash || 'Ni na voljo')}</code></p>
-            <p><strong>TX:</strong> <code>${escapeHtml(medicine.txHash || 'Ni na voljo')}</code></p>
-            <button class="btn btn-verify" data-medicine-id="${escapeHtml(medicine.medicineId)}">🔗 Preveri na blockchainu</button>
+            <p><strong>TX hash (ob ustvarjanju):</strong> <code>${escapeHtml(medicine.txHash || 'Ni shranjen — blockchain morda ni bil konfiguriran ob ustvarjanju')}</code></p>
+            <button class="btn btn-verify" data-medicine-id="${escapeHtml(medicine.medicineId)}">🔗 Preveri avtentičnost</button>
         </div>
     `;
 
@@ -237,11 +261,8 @@ async function verifyOnBlockchain(medicineId) {
         }
 
         const result = await response.json();
-        if (result.verified) {
-            alert(`✅ Zdravilo je verificirano!\nStatus: ${result.status}`);
-        } else {
-            alert(`⚠️ Zdravilo še ni potrjeno na blockchainu.\nStatus: ${result.status}`);
-        }
+        const icon = result.onChainVerified ? '✅' : (result.verified ? '✅' : '⚠️');
+        alert(`${icon} ${result.message || 'Preverjanje končano.'}`);
     } catch (error) {
         alert('Napaka pri preverjanju: ' + error.message);
     }
@@ -279,10 +300,14 @@ async function loadMyInventory() {
                             <td>${escapeHtml(m.name)}</td>
                             <td>${escapeHtml(m.batch_number)}</td>
                             <td>${m.quantity}</td>
-                            <td>${escapeHtml(m.expiry_date)}</td>
+                            <td>${formatDisplayDate(m.expiry_date)}</td>
                             <td><span class="badge badge-success">${escapeHtml(m.blockchain_status)}</span></td>
                             <td>
-                                <button class="btn-small btn-view" data-medicine-id="${escapeHtml(m.medicine_id)}">👁️ Pregled</button>
+                                <button class="btn-small btn-view"
+                                    data-medicine-id="${escapeHtml(m.medicine_id)}"
+                                    data-delivery-id="${escapeHtml(m.delivery_id || '')}">
+                                    👁️ Pregled
+                                </button>
                             </td>
                         </tr>
                     `).join('')}
@@ -291,7 +316,9 @@ async function loadMyInventory() {
         `;
 
         listDiv.querySelectorAll('.btn-view').forEach(btn => {
-            btn.addEventListener('click', () => viewMedicineDetails(btn.dataset.medicineId));
+            btn.addEventListener('click', () => {
+                viewMedicineDetails(btn.dataset.medicineId, btn.dataset.deliveryId || null);
+            });
         });
     } catch (error) {
         console.error('Error loading inventory:', error);

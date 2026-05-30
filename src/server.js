@@ -122,6 +122,22 @@ async function getSessionWallet(sessionId) {
     return result.rows[0]?.wallet_address || null;
 }
 
+function formatDateOnly(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toISOString().slice(0, 10);
+}
+
+const SUPPLY_CHAIN_ACTION_LABELS = {
+    CREATED: 'Ustvarjeno',
+    SENT_TO_DISTRIBUTOR: 'Poslano distributorju',
+    RECEIVED_BY_DISTRIBUTOR: 'Sprejeto pri distributorju',
+    FORWARDED_TO_PHARMACY: 'Poslano v lekarno',
+    RECEIVED_AT_PHARMACY: 'Sprejeto v lekarni',
+    ADDED_TO_DELIVERY: 'Pošiljka ustvarjena (zastarelo)'
+};
+
 // ===== HELPER: Walt.id API calls =====
 async function callWaltAPI(method, endpoint, data = null, sessionCookie = null) {
     try {
@@ -1315,21 +1331,22 @@ app.get('/api/pharmacy/my-inventory', async (req, res) => {
         // Get medicines received at this pharmacy
         const result = await pool.query(`
             SELECT m.medicine_id, m.id, m.name, m.batch_number, m.expiry_date, m.blockchain_status, m.ipfs_hash,
-                   d.quantity, d.created_at as received_at
+                   d.delivery_id, d.quantity, d.received_at
             FROM medicines m
             JOIN deliveries d ON m.medicine_id = d.medicine_id
             WHERE d.target_wallet = $1 AND d.status = 'DELIVERED'
-            ORDER BY d.created_at DESC
+            ORDER BY d.received_at DESC
         `, [pharmacyWallet]);
         
         res.json({
             success: true,
             inventory: result.rows.map(row => ({
                 medicine_id: row.medicine_id,
+                delivery_id: row.delivery_id,
                 name: row.name,
                 batch_number: row.batch_number,
                 quantity: row.quantity,
-                expiry_date: row.expiry_date,
+                expiry_date: formatDateOnly(row.expiry_date),
                 received_at: row.received_at,
                 blockchain_status: row.blockchain_status,
                 ipfs_hash: row.ipfs_hash
@@ -1345,18 +1362,21 @@ app.get('/api/pharmacy/my-inventory', async (req, res) => {
 app.get('/api/pharmacy/medicine-details/:medicineId', async (req, res) => {
     try {
         const { medicineId } = req.params;
-        const { sessionId } = req.query;
+        const { sessionId, deliveryId } = req.query;
 
         if (!sessionId) {
             return res.status(401).json({ error: 'Invalid or expired session' });
         }
 
-        // Validate session
         if (!(await isSessionValid(sessionId))) {
             return res.status(401).json({ error: 'Invalid or expired session' });
         }
+
+        const pharmacyWallet = await getSessionWallet(sessionId);
+        if (!pharmacyWallet) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
         
-        // Get medicine
         const medicineResult = await pool.query(
             `SELECT m.*, u.company_name as manufacturer_name 
              FROM medicines m 
@@ -1370,8 +1390,25 @@ app.get('/api/pharmacy/medicine-details/:medicineId', async (req, res) => {
         }
         
         const medicine = medicineResult.rows[0];
+
+        let receivedQuantity = 0;
+        if (deliveryId) {
+            const deliveryResult = await pool.query(
+                `SELECT quantity FROM deliveries
+                 WHERE delivery_id = $1 AND medicine_id = $2 AND target_wallet = $3 AND status = 'DELIVERED'`,
+                [deliveryId, medicineId, pharmacyWallet]
+            );
+            receivedQuantity = deliveryResult.rows[0]?.quantity ?? 0;
+        } else {
+            const qtyResult = await pool.query(
+                `SELECT COALESCE(SUM(quantity), 0) AS total
+                 FROM deliveries
+                 WHERE medicine_id = $1 AND target_wallet = $2 AND status = 'DELIVERED'`,
+                [medicineId, pharmacyWallet]
+            );
+            receivedQuantity = parseInt(qtyResult.rows[0]?.total ?? 0, 10);
+        }
         
-        // Get supply chain history with specific columns only
         const historyResult = await pool.query(
             `SELECT action, actor_wallet, actor_role, actor_did, created_at, details
              FROM supply_chain_history 
@@ -1379,6 +1416,17 @@ app.get('/api/pharmacy/medicine-details/:medicineId', async (req, res) => {
              ORDER BY created_at ASC`,
             [medicineId]
         );
+
+        const displayHistory = historyResult.rows
+            .filter(row => row.action !== 'ADDED_TO_DELIVERY' || !historyResult.rows.some(r => r.action === 'SENT_TO_DISTRIBUTOR'))
+            .map(row => ({
+                action: row.action,
+                actionLabel: SUPPLY_CHAIN_ACTION_LABELS[row.action] || row.action,
+                actor: row.actor_wallet,
+                actorRole: row.actor_role,
+                timestamp: row.created_at,
+                details: row.details ? JSON.parse(row.details) : null
+            }));
         
         res.json({
             success: true,
@@ -1387,21 +1435,18 @@ app.get('/api/pharmacy/medicine-details/:medicineId', async (req, res) => {
                 id: medicine.id,
                 name: medicine.name,
                 batchNumber: medicine.batch_number,
-                quantity: medicine.quantity,
-                expiryDate: medicine.expiry_date,
+                totalManufacturedQuantity: medicine.quantity,
+                receivedQuantity,
+                quantity: receivedQuantity,
+                expiryDate: formatDateOnly(medicine.expiry_date),
                 manufacturerName: medicine.manufacturer_name,
                 description: medicine.description,
                 blockchainStatus: medicine.blockchain_status,
                 txHash: medicine.blockchain_tx_hash,
-                blockchainVerified: medicine.blockchain_status === 'DELIVERED',
                 ipfsHash: medicine.ipfs_hash,
-                supplyChainHistory: historyResult.rows.map(row => ({
-                    action: row.action,
-                    actor: row.actor_wallet,
-                    actorRole: row.actor_role,
-                    timestamp: row.created_at,
-                    details: row.details ? JSON.parse(row.details) : null
-                }))
+                ipfsVerified: Boolean(medicine.ipfs_hash),
+                onChainRegistered: Boolean(medicine.blockchain_tx_hash),
+                supplyChainHistory: displayHistory
             }
         });
     } catch (error) {
@@ -1539,7 +1584,7 @@ app.get('/api/pharmacies/list', async (req, res) => {
 // 18. PHARMACY: Verify medicine on blockchain (GET alias for dashboard)
 app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
     try {
-        const { sessionId, medicineId, txHash } = req.query;
+        const { sessionId, medicineId } = req.query;
 
         if (!sessionId) {
             return res.status(401).json({ error: 'Invalid session' });
@@ -1549,39 +1594,77 @@ app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
             return res.status(401).json({ error: 'Invalid session' });
         }
 
-        let medicine = null;
-        if (medicineId) {
-            const medicineResult = await pool.query(
-                'SELECT * FROM medicines WHERE medicine_id = $1',
-                [medicineId]
-            );
-            medicine = medicineResult.rows[0] || null;
+        if (!medicineId) {
+            return res.status(400).json({ error: 'Manjka medicineId' });
         }
 
+        const medicineResult = await pool.query(
+            'SELECT * FROM medicines WHERE medicine_id = $1',
+            [medicineId]
+        );
+        const medicine = medicineResult.rows[0];
+        if (!medicine) {
+            return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+        }
+
+        const blockchainConfigured = Boolean(
+            SEPOLIA_RPC_URL && CONTRACT_ADDRESS && process.env.BLOCKCHAIN_PRIVATE_KEY
+        );
+
         let blockchainData = null;
-        const lookupId = medicine?.medicine_id || medicineId;
-        if (lookupId) {
+        let onChainVerified = false;
+        let chainStatus = null;
+
+        if (blockchainConfigured) {
             try {
-                if (!global.blockchain && process.env.BLOCKCHAIN_PRIVATE_KEY) {
-                    global.blockchain = initializeBlockchain(SEPOLIA_RPC_URL, process.env.BLOCKCHAIN_PRIVATE_KEY, CONTRACT_ADDRESS);
+                if (!global.blockchain) {
+                    global.blockchain = initializeBlockchain(
+                        SEPOLIA_RPC_URL,
+                        process.env.BLOCKCHAIN_PRIVATE_KEY,
+                        CONTRACT_ADDRESS
+                    );
                 }
-                if (global.blockchain) {
-                    blockchainData = await getMedicineFromBlockchain(lookupId);
-                }
+                blockchainData = await getMedicineFromBlockchain(medicineId);
+                onChainVerified = Boolean(blockchainData?.medicineId || blockchainData?.ipfsHash);
+                chainStatus = blockchainData?.status || null;
             } catch (error) {
                 console.log(`Blockchain verify note: ${error.message}`);
             }
         }
 
-        const verified = Boolean(
-            blockchainData || medicine?.blockchain_tx_hash || txHash
-        );
+        const ipfsVerified = Boolean(medicine.ipfs_hash);
+        const hasTxHash = Boolean(medicine.blockchain_tx_hash);
+        const systemVerified = ipfsVerified && medicine.blockchain_status === 'DELIVERED';
+
+        let message;
+        if (onChainVerified) {
+            message = `Zdravilo je verificirano na blockchainu (status: ${chainStatus}).`;
+        } else if (systemVerified && ipfsVerified) {
+            message = hasTxHash
+                ? 'Zdravilo je potrjeno v sistemu z IPFS zapisom. Podrobnosti na verigi niso bile prebrane.'
+                : 'Zdravilo je potrjeno v sistemu (IPFS + celotna pot dobave). On-chain TX hash ob ustvarjanju ni bil shranjen.';
+        } else if (ipfsVerified) {
+            message = 'Zdravilo ima IPFS zapis, vendar pot dobave še ni zaključena v sistemu.';
+        } else if (!blockchainConfigured) {
+            message = 'Blockchain ni konfiguriran na strežniku. Preverjanje je možno le prek podatkov v bazi.';
+        } else {
+            message = 'Zdravilo ni bilo najdeno na blockchainu in nima popolnega zapisa v sistemu.';
+        }
 
         res.json({
             success: true,
-            verified,
-            status: blockchainData?.status || medicine?.blockchain_status || 'UNKNOWN',
-            txHash: txHash || medicine?.blockchain_tx_hash || null,
+            verified: onChainVerified || systemVerified,
+            onChainVerified,
+            systemVerified,
+            ipfsVerified,
+            blockchainConfigured,
+            hasTxHash,
+            dbStatus: medicine.blockchain_status,
+            chainStatus,
+            status: chainStatus || medicine.blockchain_status,
+            txHash: medicine.blockchain_tx_hash || null,
+            ipfsHash: medicine.ipfs_hash || null,
+            message,
             blockchain: blockchainData
         });
     } catch (error) {
