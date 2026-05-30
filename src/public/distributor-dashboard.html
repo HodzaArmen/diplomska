@@ -30,73 +30,53 @@
             </div>
         </section>
 
-        <!-- RECEIVE MEDICINES -->
+        <!-- AVAILABLE MEDICINES FROM MANUFACTURERS -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>📥 Prevzem Zdravil od Proizvajalca</h2>
-                <p>Prejemajte in potrdite sprejem zdravil od proizvajalca.</p>
+                <h2>📥 Dostopna Zdravila od Proizvajalcev</h2>
+                <p>Prevzemite zdravila od proizvajalcev in jih pošljite farmacijam.</p>
                 
-                <div class="form-group">
-                    <label for="medicine-id-receive">ID Zdravila:</label>
-                    <input type="text" id="medicine-id-receive" class="form-control" placeholder="npr. MED-2024-001">
+                <div id="available-medicines" class="table-container">
+                    <p class="text-muted">Nalagam zdravila...</p>
                 </div>
-
-                <div class="form-group">
-                    <label for="medicine-batch-receive">Serijska Številka:</label>
-                    <input type="text" id="medicine-batch-receive" class="form-control" placeholder="npr. BATCH-2024-001">
-                </div>
-
-                <div class="form-group">
-                    <label for="quantity-receive">Količina:</label>
-                    <input type="number" id="quantity-receive" class="form-control" placeholder="Število enot">
-                </div>
-
-                <button id="btn-receive-medicine" class="btn btn-primary">
-                    Potrdi Sprejem
-                </button>
-                <p id="receive-error" class="error-message" style="display:none;"></p>
-                <p id="receive-success" class="success-message" style="display:none;"></p>
             </div>
         </section>
 
-        <!-- UPDATE SHIPMENT STATUS -->
+        <!-- FORWARD MEDICINE TO PHARMACY -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>🚚 Posodobitev Statusa Pošiljke</h2>
-                <p>Posodabljajte status pošiljke pri prenosu zdravil.</p>
+                <h2>🚚 Pošlji Zdravilo Lekarni</h2>
+                <p>Izberite zdravilo in ga pošljite ciljna lekarni.</p>
                 
                 <div class="form-group">
-                    <label for="shipment-id">ID Pošiljke:</label>
-                    <input type="text" id="shipment-id" class="form-control" placeholder="npr. SHIP-2024-001">
-                </div>
-
-                <div class="form-group">
-                    <label for="shipment-status">Novi Status:</label>
-                    <select id="shipment-status" class="form-control">
-                        <option value="">-- Izbira --</option>
-                        <option value="in_transit">🚚 V Prometu</option>
-                        <option value="in_warehouse">📦 V Skladišču</option>
-                        <option value="ready_for_delivery">✓ Pripravljeno za Dostavo</option>
+                    <label for="medicine-to-forward">Zdravilo:</label>
+                    <select id="medicine-to-forward" class="form-control">
+                        <option value="">-- Nalagam... --</option>
                     </select>
                 </div>
 
                 <div class="form-group">
-                    <label for="shipment-location">Trenutna Lokacija:</label>
-                    <input type="text" id="shipment-location" class="form-control" placeholder="npr. Ljubljana">
+                    <label for="forward-quantity">Količina:</label>
+                    <input type="number" id="forward-quantity" class="form-control" placeholder="Število enot" min="1">
                 </div>
 
-                <button id="btn-update-shipment" class="btn btn-primary">
-                    Posodobi Status
+                <div class="form-group">
+                    <label for="target-pharmacy-forward">Ciljna Lekarna:</label>
+                    <input type="text" id="target-pharmacy-forward" class="form-control" placeholder="npr. Lekarna Ljubljana - Mestni trg" readonly>
+                </div>
+
+                <button id="btn-forward-medicine" class="btn btn-primary">
+                    🚚 Pošlji Lekarni
                 </button>
-                <p id="shipment-error" class="error-message" style="display:none;"></p>
-                <p id="shipment-success" class="success-message" style="display:none;"></p>
+                <p id="forward-error" class="error-message" style="display:none;"></p>
+                <p id="forward-success" class="success-message" style="display:none;"></p>
             </div>
         </section>
 
-        <!-- INVENTORY -->
+        <!-- MY INVENTORY -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>📊 Inventar</h2>
+                <h2>📊 Moj Inventar</h2>
                 <div id="inventory-list" class="table-container">
                     <p class="text-muted">Ni še prejenih zdravil...</p>
                 </div>

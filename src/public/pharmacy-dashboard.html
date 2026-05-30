@@ -30,94 +30,79 @@
             </div>
         </section>
 
-        <!-- VERIFY MEDICINE -->
+        <!-- INCOMING DELIVERIES -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>✓ Preverjanje Avtentičnosti Zdravila</h2>
-                <p>Preverite avtentičnost zdravila z uporabo SSI poverilnic.</p>
-                
-                <div class="form-group">
-                    <label for="medicine-id-verify">ID Zdravila:</label>
-                    <input type="text" id="medicine-id-verify" class="form-control" placeholder="npr. MED-2024-001">
-                </div>
-
-                <div class="form-group">
-                    <label for="batch-number-verify">Serijska Številka:</label>
-                    <input type="text" id="batch-number-verify" class="form-control" placeholder="npr. BATCH-2024-001">
-                </div>
-
-                <button id="btn-verify-medicine" class="btn btn-primary">
-                    Preveri Avtentičnost
-                </button>
-                <p id="verify-error" class="error-message" style="display:none;"></p>
-                <p id="verify-success" class="success-message" style="display:none;"></p>
-                <div id="verify-result" class="verification-result" style="display:none;">
-                    <!-- Populated by JS -->
+                <h2>📥 Prihajajuče Dostave</h2>
+                <div id="incoming-deliveries" class="table-container">
+                    <p class="text-muted">Nalagam dostave...</p>
                 </div>
             </div>
         </section>
 
-        <!-- RECEIVE MEDICINES FROM DISTRIBUTOR -->
+        <!-- RECEIVE DELIVERY -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>📥 Prevzem Zdravil od Distributorja</h2>
-                <p>Prejemajte zdravila od distributorja in potrdite sprejem.</p>
+                <h2>✅ Potrdi Sprejem Dostave</h2>
+                <p>Izberite dostavo in potrdite sprejem zdravil.</p>
                 
                 <div class="form-group">
-                    <label for="medicine-id-pharmacy-receive">ID Zdravila:</label>
-                    <input type="text" id="medicine-id-pharmacy-receive" class="form-control" placeholder="npr. MED-2024-001">
+                    <label for="delivery-to-receive">Dostava:</label>
+                    <select id="delivery-to-receive" class="form-control">
+                        <option value="">-- Nalagam... --</option>
+                    </select>
                 </div>
 
-                <div class="form-group">
-                    <label for="quantity-pharmacy-receive">Količina:</label>
-                    <input type="number" id="quantity-pharmacy-receive" class="form-control" placeholder="Število enot">
-                </div>
-
-                <button id="btn-receive-from-distributor" class="btn btn-primary">
-                    Potrdi Sprejem
+                <button id="btn-receive-delivery" class="btn btn-primary">
+                    ✅ Potrdi Sprejem
                 </button>
-                <p id="pharmacy-receive-error" class="error-message" style="display:none;"></p>
-                <p id="pharmacy-receive-success" class="success-message" style="display:none;"></p>
+                <p id="receive-error" class="error-message" style="display:none;"></p>
+                <p id="receive-success" class="success-message" style="display:none;"></p>
             </div>
         </section>
 
-        <!-- PHARMACY INVENTORY -->
+        <!-- MEDICINE VISUALIZER -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>💊 Inventar Lekarne</h2>
+                <h2>🔍 Pregled Zdravila</h2>
+                <p>Izberite zdravilo in si oglejte vse podrobnosti ter preverite avtentičnost.</p>
+                
+                <div class="form-group">
+                    <label for="medicine-to-view">Zdravilo:</label>
+                    <select id="medicine-to-view" class="form-control">
+                        <option value="">-- Izberite zdravilo --</option>
+                    </select>
+                </div>
+
+                <button id="btn-view-medicine" class="btn btn-primary">
+                    🔍 Prikaži Podrobnosti
+                </button>
+
+                <!-- Medicine Details Visualizer -->
+                <div id="medicine-visualizer" style="display:none; margin-top: 20px; padding: 20px; background: #f8f9fa; border: 2px solid #dee2e6; border-radius: 5px;">
+                    <div id="visualizer-content">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- MY INVENTORY -->
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>💊 Moj Inventar</h2>
                 <div id="pharmacy-inventory" class="table-container">
-                    <p class="text-muted">Ni še prevzetih zdravil...</p>
+                    <p class="text-muted">Ni zdravil v inventarju...</p>
                 </div>
             </div>
         </section>
 
-        <!-- SUPPLY CHAIN VERIFICATION -->
+        <!-- SUPPLY CHAIN HISTORY -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>🔍 Sledljivost Zdravila (Blockchain)</h2>
-                <p>Preverite celoten proces zdravila od proizvajalca do lekarne.</p>
-                
-                <div class="form-group">
-                    <label for="medicine-id-trace">ID Zdravila:</label>
-                    <input type="text" id="medicine-id-trace" class="form-control" placeholder="npr. MED-2024-001">
-                </div>
-
-                <button id="btn-trace-medicine" class="btn btn-primary">
-                    Preurite Sledljivost
-                </button>
-                <p id="trace-error" class="error-message" style="display:none;"></p>
-                <div id="trace-result" class="trace-result" style="display:none;">
-                    <!-- Populated by JS -->
-                </div>
-            </div>
-        </section>
-
-        <!-- RECENT DELIVERIES -->
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>📦 Nedavne Dostave</h2>
-                <div id="recent-deliveries" class="table-container">
-                    <p class="text-muted">Ni še dostav...</p>
+                <h2>📋 Zgodovina Dostav</h2>
+                <div id="supply-chain-history" class="table-container">
+                    <p class="text-muted">Ni zgodovine dostav...</p>
                 </div>
             </div>
         </section>

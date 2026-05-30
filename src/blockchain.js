@@ -4,7 +4,7 @@
  * Handles all smart contract interactions
  */
 
-const { ethers } = require('ethers');
+import { ethers } from 'ethers';
 
 // Contract ABI - functions that will be called
 // This ABI matches the SupplyChain.sol smart contract
@@ -336,7 +336,7 @@ function getSignerAddress() {
 }
 
 // ===== EXPORT =====
-module.exports = {
+export {
     initializeBlockchain,
     registerUserOnBlockchain,
     registerMedicineOnBlockchain,

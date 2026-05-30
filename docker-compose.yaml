@@ -175,7 +175,7 @@ services:
     image: postgres
     container_name: app-postgres
     healthcheck:
-      test: [ "CMD", "pg_isready", "-q", "-U", "$APP_DB_USERNAME" ]
+      test: [ "CMD", "pg_isready", "-q", "-U", "$APP_DB_USERNAME", "-d", "$APP_DB_NAME" ]
       interval: 5s
       timeout: 1s
       retries: 5
@@ -185,10 +185,10 @@ services:
       POSTGRES_USER: $APP_DB_USERNAME
       POSTGRES_PASSWORD: $APP_DB_PASSWORD
     volumes:
-      - app-postgres-db:/var/lib/postgresql/data
+      - app-postgres-db:/var/lib/postgresql # it need to be mapped to /var/lib/postgresql 
       - ./src/db/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      - $APP_POSTGRES_DB_PORT:5432
+      - $APP_POSTGRES_DB_PORT:5433
 
   pg-admin:
     image: dpage/pgadmin4

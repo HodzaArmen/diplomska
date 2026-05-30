@@ -7,38 +7,39 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- NAVBAR -->
     <nav class="navbar">
         <div class="navbar-container">
             <h1 class="navbar-title">🏭 Nadzorna Plošča Proizvajalca</h1>
             <div class="navbar-right">
                 <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
-                <button id="btn-back-home" class="btn-logout">Nazaj na Domov</button>
+                <button id="btn-back-home" class="btn-logout">Odjava</button>
             </div>
         </div>
     </nav>
 
-    <!-- MAIN CONTENT -->
     <main class="container dashboard-container">
-        <!-- USER PROFILE -->
         <section class="dashboard-section">
             <div class="card">
                 <h2>👤 Moj Profil</h2>
-                <div id="manufacturer-profile" class="profile-info">
-                    <!-- Populated by JS -->
-                </div>
+                <div id="manufacturer-profile" class="profile-info"></div>
             </div>
         </section>
 
-        <!-- ISSUE CREDENTIALS -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>📋 Izdaja Poverilnic za Zdravila</h2>
-                <p>Izdajte digitalne poverilnice za serije zdravil.</p>
-                
+                <h2>💊 1. Ustvari Novo Zdravilo</h2>
+                <p>Najprej ustvarite zdravilo (VC → IPFS → Blockchain).</p>
+
                 <div class="form-group">
-                    <label for="medicine-name">Zdravilo:</label>
-                    <input type="text" id="medicine-name" class="form-control" placeholder="npr. Aspirin 500mg">
+                    <label for="medicine-selection">Izbira Zdravila:</label>
+                    <select id="medicine-selection" class="form-control">
+                        <option value="">-- Izberite ali Custom --</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="custom-medicine-group" style="display:none;">
+                    <label for="custom-medicine-name">Ime Zdravila:</label>
+                    <input type="text" id="custom-medicine-name" class="form-control" placeholder="npr. Aspirin 500mg">
                 </div>
 
                 <div class="form-group">
@@ -47,59 +48,70 @@
                 </div>
 
                 <div class="form-group">
+                    <label for="quantity">Količina (enot):</label>
+                    <input type="number" id="quantity" class="form-control" placeholder="Število enot" min="1">
+                </div>
+
+                <div class="form-group">
                     <label for="expiry-date">Datum Poteka:</label>
                     <input type="date" id="expiry-date" class="form-control">
                 </div>
 
                 <div class="form-group">
-                    <label for="quantity">Količina:</label>
-                    <input type="number" id="quantity" class="form-control" placeholder="Število enot">
+                    <label for="description">Opis:</label>
+                    <textarea id="description" class="form-control" placeholder="Dodatni opis zdravila" rows="3"></textarea>
                 </div>
 
-                <button id="btn-issue-credential" class="btn btn-primary">
-                    Izdajte Poverilnico
+                <button id="btn-create-medicine" class="btn btn-primary">
+                    🔄 Ustvari Zdravilo
                 </button>
-                <p id="issue-error" class="error-message" style="display:none;"></p>
-                <p id="issue-success" class="success-message" style="display:none;"></p>
+                <p id="create-error" class="error-message" style="display:none;"></p>
+                <p id="create-success" class="success-message" style="display:none;"></p>
             </div>
         </section>
 
-        <!-- REGISTER MEDICINE ON BLOCKCHAIN -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>⛓️ Registracija Zdravila na Blockchainu</h2>
-                <p>Registrirajte serijo zdravila v pametno pogodbo za sledljivost.</p>
-                
+                <h2>🚚 2. Pošlji v Lekarno</h2>
+                <p>Izberite ustvarjeno zdravilo in ciljno lekarno iz seznama.</p>
+
                 <div class="form-group">
-                    <label for="medicine-id">ID Zdravila:</label>
-                    <input type="text" id="medicine-id" class="form-control" placeholder="npr. MED-2024-001">
+                    <label for="delivery-medicine">Zdravilo:</label>
+                    <select id="delivery-medicine" class="form-control">
+                        <option value="">-- Izberite zdravilo --</option>
+                    </select>
                 </div>
 
                 <div class="form-group">
-                    <label for="ipfs-hash">IPFS Hash:</label>
-                    <input type="text" id="ipfs-hash" class="form-control" placeholder="npr. QmXxxx...">
+                    <label for="delivery-quantity">Količina za pošiljko:</label>
+                    <input type="number" id="delivery-quantity" class="form-control" min="1" value="1">
                 </div>
 
-                <button id="btn-register-medicine" class="btn btn-primary">
-                    Registrirajte Zdravilo
+                <div class="form-group">
+                    <label for="target-pharmacy">Ciljna Lekarna:</label>
+                    <select id="target-pharmacy" class="form-control">
+                        <option value="">-- Izberite Lekarno --</option>
+                    </select>
+                </div>
+
+                <button id="btn-send-delivery" class="btn btn-primary">
+                    📦 Dodaj v Dostavo
                 </button>
-                <p id="blockchain-error" class="error-message" style="display:none;"></p>
-                <p id="blockchain-success" class="success-message" style="display:none;"></p>
+                <p id="delivery-error" class="error-message" style="display:none;"></p>
+                <p id="delivery-success" class="success-message" style="display:none;"></p>
             </div>
         </section>
 
-        <!-- ISSUED MEDICINES HISTORY -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>📊 Zgodovino Izdanih Zdravil</h2>
+                <h2>📊 Moja Zdravila</h2>
                 <div id="medicines-list" class="table-container">
-                    <p class="text-muted">Ni še izdanih poverilnic...</p>
+                    <p class="text-muted">Ni še ustvarjenih zdravil...</p>
                 </div>
             </div>
         </section>
     </main>
 
-    <!-- FOOTER -->
     <footer class="footer">
         <p>Nadzorna Plošča Proizvajalca | Sistem za Sledljivost Zdravil</p>
     </footer>

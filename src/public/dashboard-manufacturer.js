@@ -1,56 +1,59 @@
 /**
  * dashboard-manufacturer.js
- * Manufacturer dashboard functionality
  */
 
 let currentUser = null;
 let currentSessionId = null;
-let issuedMedicines = [];
+let medicines = [];
+let medicineTemplates = [];
+let pharmacyMap = {};
 
 document.addEventListener('DOMContentLoaded', () => {
     initializeDashboard();
 });
 
+async function refreshUserFromServer() {
+    const response = await fetch(`/api/auth/user-info?sessionId=${encodeURIComponent(currentSessionId)}`);
+    if (!response.ok) throw new Error('Napaka pri nalaganju profila');
+    const data = await response.json();
+    if (data.user) {
+        currentUser = data.user;
+        sessionStorage.setItem('user', JSON.stringify(currentUser));
+    }
+}
+
 async function initializeDashboard() {
     try {
-        // Get session from storage
         currentSessionId = sessionStorage.getItem('sessionId');
         const userJson = sessionStorage.getItem('user');
-        
+
         if (!currentSessionId || !userJson) {
             window.location.href = '/';
             return;
         }
-        
-        // Validate session with backend
-        try {
-            const validateResponse = await fetch(`/api/auth/validate-session?sessionId=${encodeURIComponent(currentSessionId)}`);
-            if (!validateResponse.ok || !(await validateResponse.json()).valid) {
-                // Session is invalid or expired - clear it and redirect
-                sessionStorage.clear();
-                window.location.href = '/';
-                return;
-            }
-        } catch (error) {
-            console.error('Session validation error:', error);
+
+        const validateResponse = await fetch(`/api/auth/validate-session?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!validateResponse.ok || !(await validateResponse.json()).valid) {
             sessionStorage.clear();
             window.location.href = '/';
             return;
         }
-        
+
         currentUser = JSON.parse(userJson);
-        
-        // Check if user is manufacturer
+        await refreshUserFromServer();
+
         if (currentUser.role !== 'manufacturer') {
             alert('Dostop zavrnjen: Ta nadzorna plošča je samo za proizvajalce.');
             window.location.href = '/';
             return;
         }
-        
+
         displayUserProfile();
+        await loadMedicineTemplates();
+        await loadPharmacies();
         attachEventListeners();
         updateWalletStatus();
-        loadIssuedMedicines();
+        await loadMyMedicines();
     } catch (error) {
         console.error('Initialization error:', error);
         alert('Napaka pri inicijalizaciji nadzorne plošče');
@@ -61,6 +64,7 @@ async function initializeDashboard() {
 
 function displayUserProfile() {
     const profileDiv = document.getElementById('manufacturer-profile');
+    const email = currentUser.email || 'Ni navedeno';
     profileDiv.innerHTML = `
         <div class="profile-info-item">
             <div class="profile-info-label">Naslov Denarnice</div>
@@ -72,11 +76,7 @@ function displayUserProfile() {
         </div>
         <div class="profile-info-item">
             <div class="profile-info-label">Email</div>
-            <div class="profile-info-value">${currentUser.email}</div>
-        </div>
-        <div class="profile-info-item">
-            <div class="profile-info-label">DID</div>
-            <div class="profile-info-value" title="${currentUser.did || 'N/A'}">${(currentUser.did || 'N/A').substring(0, 20)}...</div>
+            <div class="profile-info-value">${email}</div>
         </div>
     `;
 }
@@ -86,8 +86,83 @@ function updateWalletStatus() {
     document.getElementById('wallet-status').textContent = `✓ Wallet: ${shortAddress}`;
 }
 
+async function loadMedicineTemplates() {
+    try {
+        const response = await fetch(`/api/medicines/templates?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!response.ok) throw new Error('Napaka pri nalaganju šablon');
+
+        const data = await response.json();
+        medicineTemplates = data.templates || [];
+
+        const select = document.getElementById('medicine-selection');
+        medicineTemplates.forEach(template => {
+            const option = document.createElement('option');
+            const templateName = template.template_name || template.name;
+            option.value = templateName;
+            option.textContent = templateName;
+            select.appendChild(option);
+        });
+
+        const customOption = document.createElement('option');
+        customOption.value = 'custom';
+        customOption.textContent = '+ Dodaj Custom Zdravilo';
+        select.appendChild(customOption);
+    } catch (error) {
+        console.error('Error loading templates:', error);
+    }
+}
+
+async function loadPharmacies() {
+    try {
+        const response = await fetch(`/api/pharmacies/list?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!response.ok) throw new Error('Napaka pri nalaganju lekararn');
+
+        const data = await response.json();
+        const pharmacies = data.pharmacies || [];
+
+        pharmacyMap = {};
+        const select = document.getElementById('target-pharmacy');
+        while (select.options.length > 1) {
+            select.remove(1);
+        }
+
+        pharmacies.forEach(pharmacy => {
+            pharmacyMap[pharmacy.walletAddress] = pharmacy.name;
+            const option = document.createElement('option');
+            option.value = pharmacy.walletAddress;
+            option.textContent = pharmacy.name;
+            select.appendChild(option);
+        });
+
+        if (pharmacies.length === 0) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'Ni registriranih lekararn';
+            option.disabled = true;
+            select.appendChild(option);
+        }
+    } catch (error) {
+        console.error('Error loading pharmacies:', error);
+    }
+}
+
+function updateDeliveryMedicineSelect() {
+    const select = document.getElementById('delivery-medicine');
+    while (select.options.length > 1) {
+        select.remove(1);
+    }
+
+    medicines.forEach(m => {
+        const medicineId = m.medicine_id || m.medicineId;
+        const option = document.createElement('option');
+        option.value = medicineId;
+        option.textContent = `${m.name} (${medicineId}) — ${m.quantity} enot`;
+        option.dataset.maxQuantity = m.quantity;
+        select.appendChild(option);
+    });
+}
+
 function attachEventListeners() {
-    // Back to home
     document.getElementById('btn-back-home').addEventListener('click', async () => {
         try {
             if (currentSessionId) {
@@ -104,151 +179,192 @@ function attachEventListeners() {
             window.location.href = '/';
         }
     });
-    
-    // Issue credential
-    document.getElementById('btn-issue-credential').addEventListener('click', issueCredential);
-    
-    // Register medicine
-    document.getElementById('btn-register-medicine').addEventListener('click', registerMedicine);
+
+    document.getElementById('medicine-selection').addEventListener('change', (e) => {
+        document.getElementById('custom-medicine-group').style.display =
+            e.target.value === 'custom' ? 'block' : 'none';
+    });
+
+    document.getElementById('btn-create-medicine').addEventListener('click', createMedicine);
+    document.getElementById('btn-send-delivery').addEventListener('click', sendToPharmacy);
 }
 
-async function issueCredential() {
+async function createMedicine() {
     try {
-        clearMessages();
-        
-        const medicineName = document.getElementById('medicine-name').value;
+        clearMessages('create');
+
+        const medicineSelection = document.getElementById('medicine-selection').value;
+        const customMedicineName = document.getElementById('custom-medicine-name').value;
         const batchNumber = document.getElementById('batch-number').value;
-        const expiryDate = document.getElementById('expiry-date').value;
         const quantity = document.getElementById('quantity').value;
-        
-        if (!medicineName || !batchNumber || !expiryDate || !quantity) {
-            showError('issue-error', 'Prosimo izpolnite vsa polja');
+        const expiryDate = document.getElementById('expiry-date').value;
+        const description = document.getElementById('description').value;
+
+        let medicineName = medicineSelection;
+
+        if (!medicineSelection) {
+            showError('create-error', 'Prosimo izberite ali dodajte zdravilo');
             return;
         }
-        
-        const btn = document.getElementById('btn-issue-credential');
+
+        if (medicineSelection === 'custom') {
+            if (!customMedicineName) {
+                showError('create-error', 'Prosimo vnesite ime custom zdravila');
+                return;
+            }
+            medicineName = customMedicineName;
+        }
+
+        if (!batchNumber || !quantity || !expiryDate) {
+            showError('create-error', 'Prosimo izpolnite serijsko številko, količino in datum poteka');
+            return;
+        }
+
+        const btn = document.getElementById('btn-create-medicine');
         btn.disabled = true;
-        btn.textContent = 'Izdajam...';
-        
-        // In a real implementation, this would call the Walt.id Issuer API
-        // For now, we'll simulate the issuance
-        const medicineRecord = {
-            id: `MED-${Date.now()}`,
-            medicineName,
-            batchNumber,
-            expiryDate,
-            quantity,
-            manufacturer: currentUser.companyName,
-            issuedAt: new Date().toISOString(),
-            did: currentUser.did
-        };
-        
-        issuedMedicines.push(medicineRecord);
-        localStorage.setItem('issued_medicines', JSON.stringify(issuedMedicines));
-        
-        showSuccess('issue-success', '✓ Poverilnica je bila uspešno izdana!');
-        
-        // Clear form
-        document.getElementById('medicine-name').value = '';
+        btn.textContent = '⏳ Ustvarjam...';
+
+        const response = await fetch('/api/medicines/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sessionId: currentSessionId,
+                medicineName,
+                batchNumber,
+                quantity: parseInt(quantity, 10),
+                expiryDate,
+                description
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Napaka pri ustvarjanju zdravila');
+        }
+
+        const medicine = data.medicine || data;
+        const ipfsHashDisplay = medicine.ipfsHash ? medicine.ipfsHash.substring(0, 20) + '...' : 'Pending';
+        showSuccess('create-success', `✓ Zdravilo ustvarjeno! IPFS: ${ipfsHashDisplay}`);
+
+        document.getElementById('medicine-selection').value = '';
+        document.getElementById('custom-medicine-name').value = '';
         document.getElementById('batch-number').value = '';
-        document.getElementById('expiry-date').value = '';
         document.getElementById('quantity').value = '';
-        
-        // Reload medicines list
-        loadIssuedMedicines();
+        document.getElementById('expiry-date').value = '';
+        document.getElementById('description').value = '';
+        document.getElementById('custom-medicine-group').style.display = 'none';
+
+        await loadMyMedicines();
     } catch (error) {
-        console.error('Error issuing credential:', error);
-        showError('issue-error', 'Napaka: ' + error.message);
+        console.error('Error creating medicine:', error);
+        showError('create-error', error.message);
     } finally {
-        const btn = document.getElementById('btn-issue-credential');
+        const btn = document.getElementById('btn-create-medicine');
         btn.disabled = false;
-        btn.textContent = 'Izdajte Poverilnico';
+        btn.textContent = '🔄 Ustvari Zdravilo';
     }
 }
 
-async function registerMedicine() {
+async function sendToPharmacy() {
     try {
-        clearMessages();
-        
-        const medicineId = document.getElementById('medicine-id').value;
-        const ipfsHash = document.getElementById('ipfs-hash').value;
-        
-        if (!medicineId || !ipfsHash) {
-            showError('blockchain-error', 'Prosimo izpolnite vsa polja');
+        clearMessages('delivery');
+
+        const medicineId = document.getElementById('delivery-medicine').value;
+        const quantity = parseInt(document.getElementById('delivery-quantity').value, 10);
+        const targetPharmacy = document.getElementById('target-pharmacy').value;
+
+        if (!medicineId || !quantity || !targetPharmacy) {
+            showError('delivery-error', 'Izberite zdravilo, količino in lekarno');
             return;
         }
-        
-        const btn = document.getElementById('btn-register-medicine');
+
+        const btn = document.getElementById('btn-send-delivery');
         btn.disabled = true;
-        btn.textContent = 'Registriram...';
-        
-        // In a real implementation, this would call the Ethereum smart contract
-        // For now, we'll simulate the registration
-        console.log('Registering medicine on blockchain:', { medicineId, ipfsHash });
-        
-        showSuccess('blockchain-success', '✓ Zdravilo je bilo uspešno registrirano na blockchainu!');
-        
-        // Clear form
-        document.getElementById('medicine-id').value = '';
-        document.getElementById('ipfs-hash').value = '';
+
+        const response = await fetch('/api/medicines/add-to-delivery', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sessionId: currentSessionId,
+                medicineId,
+                quantity,
+                targetPharmacyName: pharmacyMap[targetPharmacy] || '',
+                targetPharmacyWallet: targetPharmacy
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Napaka pri pošiljanju v lekarno');
+        }
+
+        showSuccess('delivery-success', `✓ Zdravilo dodano v dostavo za ${pharmacyMap[targetPharmacy]}`);
+        document.getElementById('delivery-medicine').value = '';
+        document.getElementById('delivery-quantity').value = '1';
+        document.getElementById('target-pharmacy').value = '';
     } catch (error) {
-        console.error('Error registering medicine:', error);
-        showError('blockchain-error', 'Napaka: ' + error.message);
+        showError('delivery-error', error.message);
     } finally {
-        const btn = document.getElementById('btn-register-medicine');
-        btn.disabled = false;
-        btn.textContent = 'Registrirajte Zdravilo';
+        document.getElementById('btn-send-delivery').disabled = false;
     }
 }
 
-function loadIssuedMedicines() {
-    const stored = localStorage.getItem('issued_medicines');
-    if (stored) {
-        issuedMedicines = JSON.parse(stored);
-    }
-    
-    const listDiv = document.getElementById('medicines-list');
-    
-    if (issuedMedicines.length === 0) {
-        listDiv.innerHTML = '<p class="text-muted">Ni še izdanih poverilnic...</p>';
-        return;
-    }
-    
-    const html = `
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Zdravilo</th>
-                    <th>Serijska Številka</th>
-                    <th>Rok Trajanja</th>
-                    <th>Količina</th>
-                    <th>Izdano</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${issuedMedicines.map(m => `
+async function loadMyMedicines() {
+    try {
+        const response = await fetch(`/api/medicines/my-medicines?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!response.ok) throw new Error('Napaka pri nalaganju zdravil');
+
+        const data = await response.json();
+        medicines = data.medicines || [];
+        updateDeliveryMedicineSelect();
+
+        const listDiv = document.getElementById('medicines-list');
+
+        if (medicines.length === 0) {
+            listDiv.innerHTML = '<p class="text-muted">Ni še ustvarjenih zdravil...</p>';
+            return;
+        }
+
+        listDiv.innerHTML = `
+            <table>
+                <thead>
                     <tr>
-                        <td>${m.id}</td>
-                        <td>${m.medicineName}</td>
-                        <td>${m.batchNumber}</td>
-                        <td>${m.expiryDate}</td>
-                        <td>${m.quantity}</td>
-                        <td>${new Date(m.issuedAt).toLocaleDateString('sl-SI')}</td>
+                        <th>ID</th>
+                        <th>Zdravilo</th>
+                        <th>Serijska</th>
+                        <th>Količina</th>
+                        <th>Rok</th>
+                        <th>Status</th>
                     </tr>
-                `).join('')}
-            </tbody>
-        </table>
-    `;
-    
-    listDiv.innerHTML = html;
+                </thead>
+                <tbody>
+                    ${medicines.map(m => `
+                        <tr>
+                            <td>${m.medicine_id || m.medicineId}</td>
+                            <td>${m.name}</td>
+                            <td>${m.batch_number}</td>
+                            <td>${m.quantity}</td>
+                            <td>${m.expiry_date}</td>
+                            <td><span class="badge badge-info">${m.blockchain_status || 'MANUFACTURED'}</span></td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        console.error('Error loading medicines:', error);
+    }
 }
 
-function clearMessages() {
-    document.getElementById('issue-error').style.display = 'none';
-    document.getElementById('issue-success').style.display = 'none';
-    document.getElementById('blockchain-error').style.display = 'none';
-    document.getElementById('blockchain-success').style.display = 'none';
+function clearMessages(prefix) {
+    if (prefix === 'create' || !prefix) {
+        document.getElementById('create-error').style.display = 'none';
+        document.getElementById('create-success').style.display = 'none';
+    }
+    if (prefix === 'delivery' || !prefix) {
+        document.getElementById('delivery-error').style.display = 'none';
+        document.getElementById('delivery-success').style.display = 'none';
+    }
 }
 
 function showError(elementId, message) {

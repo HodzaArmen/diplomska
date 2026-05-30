@@ -3,10 +3,10 @@
  * Integration with Pinata for storing product data on IPFS
  */
 
-const axios = require('axios');
+import axios from 'axios';
 
 // Pinata API endpoint
-const PINATA_API_URL = 'https://api.pinata.cloud/pinning/pinJSONToIPFS';
+export const PINATA_API_URL = 'https://api.pinata.cloud/pinning/pinJSONToIPFS';
 
 // ===== FUNCTION: Upload product data to IPFS =====
 /**
@@ -119,9 +119,8 @@ function generateSampleProductData(index = 1) {
 }
 
 // ===== EXPORT =====
-module.exports = {
+export {
     uploadProductData,
     createProductData,
-    generateSampleProductData,
-    PINATA_API_URL
+    generateSampleProductData
 };
