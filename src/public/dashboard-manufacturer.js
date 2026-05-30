@@ -63,27 +63,32 @@ async function initializeDashboard() {
 }
 
 function displayUserProfile() {
-    const profileDiv = document.getElementById('manufacturer-profile');
-    const email = currentUser.email || 'Ni navedeno';
-    profileDiv.innerHTML = `
-        <div class="profile-info-item">
-            <div class="profile-info-label">Naslov Denarnice</div>
-            <div class="profile-info-value">${currentUser.walletAddress}</div>
-        </div>
-        <div class="profile-info-item">
-            <div class="profile-info-label">Ime Podjetja</div>
-            <div class="profile-info-value">${currentUser.companyName}</div>
-        </div>
-        <div class="profile-info-item">
-            <div class="profile-info-label">Email</div>
-            <div class="profile-info-value">${email}</div>
-        </div>
-    `;
+    const navbarTitle = document.querySelector('.navbar-title');
+    const companyNameDisplay = currentUser.companyName ? `${currentUser.companyName}` : '';
+    navbarTitle.innerHTML = `${companyNameDisplay}`;
 }
 
 function updateWalletStatus() {
-    const shortAddress = currentUser.walletAddress.substring(0, 6) + '...' + currentUser.walletAddress.substring(-4);
-    document.getElementById('wallet-status').textContent = `✓ Wallet: ${shortAddress}`;
+    const fullAddress = currentUser.walletAddress;
+    const email = currentUser.email;
+
+    const shortAddress = `${fullAddress.slice(0, 6)}...${fullAddress.slice(-4)}`;
+    
+    const walletBtn = document.getElementById('wallet-status');
+
+    walletBtn.innerHTML = `${email} | <strong>${shortAddress}</strong>`;
+
+    walletBtn.style.cursor = 'pointer';
+    walletBtn.title = 'Klikni za kopiranje celotnega naslova';
+    walletBtn.style.transition = 'all 0.2s ease';
+
+    walletBtn.onclick = async function() {
+        try {
+            await navigator.clipboard.writeText(fullAddress);
+        } catch (err) {
+            console.error('Napaka pri kopiranju v odložišče:', err);
+        }
+    };
 }
 
 async function loadMedicineTemplates() {
