@@ -6,7 +6,7 @@ let currentUser = null;
 let currentSessionId = null;
 let medicines = [];
 let medicineTemplates = [];
-let pharmacyMap = {};
+let distributorMap = {};
 
 document.addEventListener('DOMContentLoaded', () => {
     initializeDashboard();
@@ -50,7 +50,7 @@ async function initializeDashboard() {
 
         displayUserProfile();
         await loadMedicineTemplates();
-        await loadPharmacies();
+        await loadDistributors();
         attachEventListeners();
         updateWalletStatus();
         await loadMyMedicines();
@@ -117,37 +117,37 @@ async function loadMedicineTemplates() {
     }
 }
 
-async function loadPharmacies() {
+async function loadDistributors() {
     try {
-        const response = await fetch(`/api/pharmacies/list?sessionId=${encodeURIComponent(currentSessionId)}`);
-        if (!response.ok) throw new Error('Napaka pri nalaganju lekararn');
+        const response = await fetch(`/api/distributors/list?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!response.ok) throw new Error('Napaka pri nalaganju distributorjev');
 
         const data = await response.json();
-        const pharmacies = data.pharmacies || [];
+        const distributors = data.distributors || [];
 
-        pharmacyMap = {};
-        const select = document.getElementById('target-pharmacy');
+        distributorMap = {};
+        const select = document.getElementById('target-distributor');
         while (select.options.length > 1) {
             select.remove(1);
         }
 
-        pharmacies.forEach(pharmacy => {
-            pharmacyMap[pharmacy.walletAddress] = pharmacy.name;
+        distributors.forEach(distributor => {
+            distributorMap[distributor.walletAddress] = distributor.name;
             const option = document.createElement('option');
-            option.value = pharmacy.walletAddress;
-            option.textContent = pharmacy.name;
+            option.value = distributor.walletAddress;
+            option.textContent = distributor.name;
             select.appendChild(option);
         });
 
-        if (pharmacies.length === 0) {
+        if (distributors.length === 0) {
             const option = document.createElement('option');
             option.value = '';
-            option.textContent = 'Ni registriranih lekararn';
+            option.textContent = 'Ni registriranih distributorjev';
             option.disabled = true;
             select.appendChild(option);
         }
     } catch (error) {
-        console.error('Error loading pharmacies:', error);
+        console.error('Error loading distributors:', error);
     }
 }
 
@@ -159,10 +159,11 @@ function updateDeliveryMedicineSelect() {
 
     medicines.forEach(m => {
         const medicineId = m.medicine_id || m.medicineId;
+        const available = m.available_quantity ?? m.quantity;
         const option = document.createElement('option');
         option.value = medicineId;
-        option.textContent = `${m.name} (${medicineId}) — ${m.quantity} enot`;
-        option.dataset.maxQuantity = m.quantity;
+        option.textContent = `${m.name} (${medicineId}) — ${available} na voljo`;
+        option.dataset.maxQuantity = available;
         select.appendChild(option);
     });
 }
@@ -192,7 +193,7 @@ function attachEventListeners() {
     });
 
     document.getElementById('btn-create-medicine').addEventListener('click', createMedicine);
-    document.getElementById('btn-send-delivery').addEventListener('click', sendToPharmacy);
+    document.getElementById('btn-send-delivery').addEventListener('click', sendToDistributor);
 }
 
 async function createMedicine() {
@@ -271,16 +272,16 @@ async function createMedicine() {
     }
 }
 
-async function sendToPharmacy() {
+async function sendToDistributor() {
     try {
         clearMessages('delivery');
 
         const medicineId = document.getElementById('delivery-medicine').value;
         const quantity = parseInt(document.getElementById('delivery-quantity').value, 10);
-        const targetPharmacy = document.getElementById('target-pharmacy').value;
+        const targetDistributor = document.getElementById('target-distributor').value;
 
-        if (!medicineId || !quantity || !targetPharmacy) {
-            showError('delivery-error', 'Izberite zdravilo, količino in lekarno');
+        if (!medicineId || !quantity || !targetDistributor) {
+            showError('delivery-error', 'Izberite zdravilo, količino in distributorja');
             return;
         }
 
@@ -294,20 +295,21 @@ async function sendToPharmacy() {
                 sessionId: currentSessionId,
                 medicineId,
                 quantity,
-                targetPharmacyName: pharmacyMap[targetPharmacy] || '',
-                targetPharmacyWallet: targetPharmacy
+                targetDistributorName: distributorMap[targetDistributor] || '',
+                targetDistributorWallet: targetDistributor
             })
         });
 
         const data = await response.json();
         if (!response.ok) {
-            throw new Error(data.error || 'Napaka pri pošiljanju v lekarno');
+            throw new Error(data.error || 'Napaka pri pošiljanju distributorju');
         }
 
-        showSuccess('delivery-success', `✓ Zdravilo dodano v dostavo za ${pharmacyMap[targetPharmacy]}`);
+        showSuccess('delivery-success', `✓ Poslano distributorju ${distributorMap[targetDistributor]}`);
         document.getElementById('delivery-medicine').value = '';
         document.getElementById('delivery-quantity').value = '1';
-        document.getElementById('target-pharmacy').value = '';
+        document.getElementById('target-distributor').value = '';
+        await loadMyMedicines();
     } catch (error) {
         showError('delivery-error', error.message);
     } finally {
@@ -339,6 +341,7 @@ async function loadMyMedicines() {
                         <th>Zdravilo</th>
                         <th>Serijska</th>
                         <th>Količina</th>
+                        <th>Na voljo</th>
                         <th>Rok</th>
                         <th>Status</th>
                     </tr>
@@ -350,6 +353,7 @@ async function loadMyMedicines() {
                             <td>${m.name}</td>
                             <td>${m.batch_number}</td>
                             <td>${m.quantity}</td>
+                            <td>${m.available_quantity ?? m.quantity}</td>
                             <td>${m.expiry_date}</td>
                             <td><span class="badge badge-info">${m.blockchain_status || 'MANUFACTURED'}</span></td>
                         </tr>

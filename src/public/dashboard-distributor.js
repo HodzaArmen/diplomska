@@ -1,15 +1,13 @@
 /**
  * dashboard-distributor.js
- * Distributor dashboard functionality
+ * Flow: receive from manufacturer → forward to pharmacy
  */
 
 let currentUser = null;
 let currentSessionId = null;
-let availableMedicines = [];
 let myInventory = [];
-let selectedMedicines = {};
-let pharmacyMap = {}; // Map of wallet address to pharmacy name
-let pharmacies = []; // List of available pharmacies
+let pharmacyMap = {};
+let pharmacies = [];
 
 document.addEventListener('DOMContentLoaded', () => {
     initializeDashboard();
@@ -19,26 +17,19 @@ async function initializeDashboard() {
     try {
         currentSessionId = sessionStorage.getItem('sessionId');
         const userJson = sessionStorage.getItem('user');
-        
+
         if (!currentSessionId || !userJson) {
             window.location.href = '/';
             return;
         }
-        
-        try {
-            const validateResponse = await fetch(`/api/auth/validate-session?sessionId=${encodeURIComponent(currentSessionId)}`);
-            if (!validateResponse.ok || !(await validateResponse.json()).valid) {
-                sessionStorage.clear();
-                window.location.href = '/';
-                return;
-            }
-        } catch (error) {
-            console.error('Session validation error:', error);
+
+        const validateResponse = await fetch(`/api/auth/validate-session?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!validateResponse.ok || !(await validateResponse.json()).valid) {
             sessionStorage.clear();
             window.location.href = '/';
             return;
         }
-        
+
         currentUser = JSON.parse(userJson);
 
         const userInfoResponse = await fetch(`/api/auth/user-info?sessionId=${encodeURIComponent(currentSessionId)}`);
@@ -49,19 +40,20 @@ async function initializeDashboard() {
                 sessionStorage.setItem('user', JSON.stringify(currentUser));
             }
         }
-        
+
         if (currentUser.role !== 'distributor') {
             alert('Dostop zavrnjen: Ta nadzorna plošča je samo za distributerje.');
             window.location.href = '/';
             return;
         }
-        
+
         displayUserProfile();
         attachEventListeners();
         updateWalletStatus();
         await loadPharmacies();
-        await loadAvailableMedicines();
+        await loadIncomingDeliveries();
         await loadMyInventory();
+        await loadOutgoingDeliveries();
     } catch (error) {
         console.error('Initialization error:', error);
         alert('Napaka pri inicijalizaciji nadzorne plošče');
@@ -71,29 +63,26 @@ async function initializeDashboard() {
 }
 
 function escapeHtml(unsafe) {
-    return unsafe
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+    return String(unsafe ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 function displayUserProfile() {
     const navbarTitle = document.querySelector('.navbar-title');
-    const companyNameDisplay = currentUser.companyName ? `${currentUser.companyName}` : '';
-    navbarTitle.innerHTML = `${companyNameDisplay}`;
+    navbarTitle.innerHTML = currentUser.companyName || 'Distributor';
 }
 
 async function loadPharmacies() {
     try {
         const response = await fetch(`/api/pharmacies/list?sessionId=${encodeURIComponent(currentSessionId)}`);
-        if (!response.ok) throw new Error('Napaka pri nalaganju lekararn');
-        
+        if (!response.ok) throw new Error('Napaka pri nalaganju lekarn');
+
         const data = await response.json();
         pharmacies = data.pharmacies || [];
-        
-        // Create mapping of wallet address to pharmacy name
         pharmacyMap = {};
         pharmacies.forEach(p => {
             pharmacyMap[p.walletAddress] = p.name;
@@ -106,143 +95,207 @@ async function loadPharmacies() {
 function updateWalletStatus() {
     const fullAddress = currentUser.walletAddress;
     const email = currentUser.email;
-
     const shortAddress = `${fullAddress.slice(0, 6)}...${fullAddress.slice(-4)}`;
-    
     const walletBtn = document.getElementById('wallet-status');
 
     walletBtn.innerHTML = `${email} | <strong>${shortAddress}</strong>`;
-
     walletBtn.style.cursor = 'pointer';
     walletBtn.title = 'Klikni za kopiranje celotnega naslova';
-    walletBtn.style.transition = 'all 0.2s ease';
-
-    walletBtn.onclick = async function() {
+    walletBtn.onclick = async () => {
         try {
             await navigator.clipboard.writeText(fullAddress);
         } catch (err) {
-            console.error('Napaka pri kopiranju v odložišče:', err);
+            console.error('Napaka pri kopiranju:', err);
         }
     };
 }
 
-async function loadAvailableMedicines() {
+async function loadIncomingDeliveries() {
+    const listDiv = document.getElementById('incoming-deliveries-list');
     try {
-        const response = await fetch(`/api/distributor/available-medicines?sessionId=${encodeURIComponent(currentSessionId)}`);
-        if (!response.ok) throw new Error('Napaka pri nalaganju razpoložljivih zdravil');
-        
+        const response = await fetch(`/api/distributor/incoming-deliveries?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!response.ok) throw new Error('Napaka pri nalaganju dostav');
+
         const data = await response.json();
-        availableMedicines = (data.medicines || data || []);
-        
-        const listDiv = document.getElementById('available-medicines-list');
-        
-        if (availableMedicines.length === 0) {
-            listDiv.innerHTML = '<p class="text-muted">Ni razpoložljivih zdravil za distribucijo...</p>';
+        const deliveries = data.deliveries || [];
+
+        if (deliveries.length === 0) {
+            listDiv.innerHTML = '<p class="text-muted">Ni novih pošiljk od proizvajalcev...</p>';
             return;
         }
-        
-        const html = `
+
+        listDiv.innerHTML = `
             <table>
                 <thead>
                     <tr>
                         <th>Zdravilo</th>
                         <th>Proizvajalec</th>
-                        <th>Serijska Številka</th>
+                        <th>Serijska</th>
                         <th>Količina</th>
                         <th>Rok</th>
-                        <th>Status</th>
                         <th>Akcija</th>
                     </tr>
                 </thead>
-                <tbody id="medicines-tbody">
+                <tbody>
+                    ${deliveries.map(d => `
+                        <tr>
+                            <td>${escapeHtml(d.medicine_name)}</td>
+                            <td>${escapeHtml(d.manufacturer_name)}</td>
+                            <td>${escapeHtml(d.batch_number)}</td>
+                            <td>${d.quantity}</td>
+                            <td>${escapeHtml(d.expiry_date)}</td>
+                            <td>
+                                <button class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">
+                                    ✓ Sprejmi
+                                </button>
+                            </td>
+                        </tr>
+                    `).join('')}
                 </tbody>
             </table>
         `;
-        
-        listDiv.innerHTML = html;
-        const tbody = document.getElementById('medicines-tbody');
-        availableMedicines.forEach(m => {
-            const row = document.createElement('tr');
-            const manufacturerWallet = (m.manufacturer_wallet || 'Neznano').substring(0, 10) + '...';
-            row.innerHTML = `
-                <td>${escapeHtml(m.name)}</td>
-                <td>${escapeHtml(manufacturerWallet)}</td>
-                <td>${escapeHtml(m.batch_number)}</td>
-                <td>${m.quantity}</td>
-                <td>${escapeHtml(m.expiry_date)}</td>
-                <td><span class="badge badge-success">${escapeHtml(m.blockchain_status)}</span></td>
-                <td>
-                    <button class="btn-small btn-select" data-medicine-id="${m.id}" data-medicine-name="${m.name}" data-quantity="${m.quantity}">
-                        📦 Izberi
-                    </button>
-                </td>
-            `;
-            
-            row.querySelector('.btn-select').addEventListener('click', function() {
-                const medicineId = this.getAttribute('data-medicine-id');
-                const medicineName = this.getAttribute('data-medicine-name');
-                const quantity = this.getAttribute('data-quantity');
-                selectMedicineForForwarding(medicineId, medicineName, parseInt(quantity));
-            });
-            
-            tbody.appendChild(row);
+
+        listDiv.querySelectorAll('.btn-receive').forEach(btn => {
+            btn.addEventListener('click', () => receiveFromManufacturer(btn.dataset.deliveryId));
         });
     } catch (error) {
-        console.error('Error loading available medicines:', error);
+        console.error('Error loading incoming deliveries:', error);
+        listDiv.innerHTML = '<p class="text-muted">Napaka pri nalaganju dostav.</p>';
     }
 }
 
-function selectMedicineForForwarding(medicineId, medicineName, availableQuantity) {
+async function receiveFromManufacturer(deliveryId) {
+    try {
+        const response = await fetch('/api/distributor/receive-delivery', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: currentSessionId, deliveryId })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Napaka pri sprejemu');
+        }
+
+        alert('✓ Zdravilo sprejeto v inventar!');
+        await loadIncomingDeliveries();
+        await loadMyInventory();
+    } catch (error) {
+        alert('Napaka: ' + error.message);
+    }
+}
+
+async function loadMyInventory() {
+    const listDiv = document.getElementById('my-inventory-list');
+    try {
+        const response = await fetch(`/api/distributor/my-inventory?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!response.ok) throw new Error('Napaka pri nalaganju inventarja');
+
+        const data = await response.json();
+        myInventory = data.inventory || [];
+
+        if (myInventory.length === 0) {
+            listDiv.innerHTML = '<p class="text-muted">Inventar je prazen. Najprej sprejmite pošiljko od proizvajalca.</p>';
+            document.getElementById('forward-medicine-panel').innerHTML = '';
+            return;
+        }
+
+        listDiv.innerHTML = `
+            <table>
+                <thead>
+                    <tr>
+                        <th>Zdravilo</th>
+                        <th>Serijska</th>
+                        <th>Na voljo</th>
+                        <th>Rok</th>
+                        <th>Akcija</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${myInventory.map(m => `
+                        <tr>
+                            <td>${escapeHtml(m.name)}</td>
+                            <td>${escapeHtml(m.batch_number)}</td>
+                            <td>${m.available_quantity} enot</td>
+                            <td>${escapeHtml(m.expiry_date)}</td>
+                            <td>
+                                <button class="btn-small btn-forward"
+                                    data-medicine-id="${escapeHtml(m.medicine_id)}"
+                                    data-medicine-name="${escapeHtml(m.name)}"
+                                    data-quantity="${m.available_quantity}">
+                                    🚚 Pošlji v lekarno
+                                </button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+
+        listDiv.querySelectorAll('.btn-forward').forEach(btn => {
+            btn.addEventListener('click', () => {
+                showForwardPanel(
+                    btn.dataset.medicineId,
+                    btn.dataset.medicineName,
+                    parseInt(btn.dataset.quantity, 10)
+                );
+            });
+        });
+    } catch (error) {
+        console.error('Error loading inventory:', error);
+        listDiv.innerHTML = '<p class="text-muted">Napaka pri nalaganju inventarja.</p>';
+    }
+}
+
+function showForwardPanel(medicineId, medicineName, availableQuantity) {
     const forwardDiv = document.getElementById('forward-medicine-panel');
-    
-    // Create pharmacy options HTML
-    let pharmacyOptionsHtml = '<option value="">-- Izbira --</option>';
+
+    let pharmacyOptions = '<option value="">-- Izberite lekarno --</option>';
     if (pharmacies.length === 0) {
-        pharmacyOptionsHtml = '<option value="" disabled>Ni dostopnih lekararn</option>';
+        pharmacyOptions = '<option value="" disabled>Ni registriranih lekarn</option>';
     } else {
         pharmacies.forEach(p => {
-            pharmacyOptionsHtml += `<option value="${p.walletAddress}">${escapeHtml(p.name)}</option>`;
+            pharmacyOptions += `<option value="${p.walletAddress}">${escapeHtml(p.name)}</option>`;
         });
     }
-    
+
     forwardDiv.innerHTML = `
-        <h3>📦 Pošlji zdravilo v lekarno</h3>
+        <h3>🚚 Pošlji v lekarno: ${escapeHtml(medicineName)}</h3>
         <div class="form-group">
-            <label>Zdravilo: <strong>${escapeHtml(medicineName)}</strong></label>
+            <label for="forward-quantity">Količina (max ${availableQuantity})</label>
+            <input type="number" id="forward-quantity" class="form-control" min="1" max="${availableQuantity}" value="${availableQuantity}">
         </div>
         <div class="form-group">
-            <label>Količina (Max: ${availableQuantity})</label>
-            <input type="number" id="forward-quantity" min="1" max="${availableQuantity}" value="${availableQuantity}">
+            <label for="target-pharmacy">Ciljna lekarna</label>
+            <select id="target-pharmacy" class="form-control">${pharmacyOptions}</select>
         </div>
-        <div class="form-group">
-            <label>Ciljna Lekarno</label>
-            <select id="target-pharmacy" class="form-control">
-                ${pharmacyOptionsHtml}
-            </select>
-        </div>
-        <button class="btn btn-forward">🚚 Pošlji v Lekarno</button>
+        <button id="btn-confirm-forward" class="btn btn-primary">📦 Potrdi pošiljko</button>
+        <p id="forward-error" class="error-message" style="display:none;"></p>
+        <p id="forward-success" class="success-message" style="display:none;"></p>
     `;
-    
-    forwardDiv.querySelector('.btn-forward').addEventListener('click', function() {
+
+    document.getElementById('btn-confirm-forward').addEventListener('click', () => {
         forwardMedicineToPharmacy(medicineId);
     });
 }
 
 async function forwardMedicineToPharmacy(medicineId) {
+    const errorEl = document.getElementById('forward-error');
+    const successEl = document.getElementById('forward-success');
+    errorEl.style.display = 'none';
+    successEl.style.display = 'none';
+
     try {
-        const quantity = parseInt(document.getElementById('forward-quantity').value);
+        const quantity = parseInt(document.getElementById('forward-quantity').value, 10);
         const targetPharmacyWallet = document.getElementById('target-pharmacy').value;
-        
+
         if (!quantity || quantity < 1) {
-            alert('Vnesite veljavno količino');
-            return;
+            throw new Error('Vnesite veljavno količino');
         }
-        
         if (!targetPharmacyWallet) {
-            alert('Izberite lekarno');
-            return;
+            throw new Error('Izberite lekarno');
         }
-        
+
         const response = await fetch('/api/distributor/send-to-pharmacy', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -254,65 +307,63 @@ async function forwardMedicineToPharmacy(medicineId) {
                 targetPharmacyWallet
             })
         });
-        
+
+        const data = await response.json();
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.message || 'Napaka pri pošiljanju zdravila');
+            throw new Error(data.error || 'Napaka pri pošiljanju');
         }
-        
-        alert('✓ Zdravilo uspešno poslano v lekarno!');
-        document.getElementById('forward-medicine-panel').innerHTML = '';
-        await loadAvailableMedicines();
+
+        successEl.textContent = `✓ Poslano v ${pharmacyMap[targetPharmacyWallet]}`;
+        successEl.style.display = 'block';
         await loadMyInventory();
+        await loadOutgoingDeliveries();
     } catch (error) {
-        console.error('Error forwarding medicine:', error);
-        alert('Napaka: ' + error.message);
+        errorEl.textContent = error.message;
+        errorEl.style.display = 'block';
     }
 }
 
-async function loadMyInventory() {
+async function loadOutgoingDeliveries() {
+    const listDiv = document.getElementById('shipment-history-list');
     try {
-        const response = await fetch(`/api/distributor/my-inventory?sessionId=${encodeURIComponent(currentSessionId)}`);
-        if (!response.ok) throw new Error('Napaka pri nalaganju inventarja');
-        
+        const response = await fetch(`/api/distributor/outgoing-deliveries?sessionId=${encodeURIComponent(currentSessionId)}`);
+        if (!response.ok) throw new Error('Napaka pri nalaganju zgodovine');
+
         const data = await response.json();
-        myInventory = (data.inventory || data || []);
-        
-        const listDiv = document.getElementById('my-inventory-list');
-        
-        if (myInventory.length === 0) {
-            listDiv.innerHTML = '<p class="text-muted">Prazno. Najprej sprejmite zdravila od proizvajalca.</p>';
+        const deliveries = data.deliveries || [];
+
+        if (deliveries.length === 0) {
+            listDiv.innerHTML = '<p class="text-muted">Ni še poslanih pošiljk v lekarne...</p>';
             return;
         }
-        
-        const html = `
+
+        listDiv.innerHTML = `
             <table>
                 <thead>
                     <tr>
                         <th>Zdravilo</th>
-                        <th>Serijska Številka</th>
+                        <th>Lekarna</th>
                         <th>Količina</th>
-                        <th>Rok</th>
                         <th>Status</th>
+                        <th>Datum</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${myInventory.map(m => `
+                    ${deliveries.map(d => `
                         <tr>
-                            <td>${escapeHtml(m.name)}</td>
-                            <td>${escapeHtml(m.batch_number)}</td>
-                            <td>${m.quantity}</td>
-                            <td>${escapeHtml(m.expiry_date)}</td>
-                            <td><span class="badge badge-info">${escapeHtml(m.status || m.blockchain_status)}</span></td>
+                            <td>${escapeHtml(d.medicine_name)}</td>
+                            <td>${escapeHtml(d.pharmacy_name)}</td>
+                            <td>${d.quantity}</td>
+                            <td><span class="badge badge-info">${escapeHtml(d.status)}</span></td>
+                            <td>${new Date(d.created_at).toLocaleString('sl-SI')}</td>
                         </tr>
                     `).join('')}
                 </tbody>
             </table>
         `;
-        
-        listDiv.innerHTML = html;
     } catch (error) {
-        console.error('Error loading inventory:', error);
+        console.error('Error loading outgoing deliveries:', error);
+        listDiv.innerHTML = '<p class="text-muted">Napaka pri nalaganju zgodovine.</p>';
     }
 }
 

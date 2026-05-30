@@ -7,98 +7,47 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- NAVBAR -->
     <nav class="navbar">
         <div class="navbar-container">
             <h1 class="navbar-title">💊 Nadzorna Plošča Lekarne</h1>
             <div class="navbar-right">
                 <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
-                <button id="btn-back-home" class="btn-logout">Nazaj na Domov</button>
+                <button id="btn-back-home" class="btn-logout">Odjava</button>
             </div>
         </div>
     </nav>
 
-    <!-- MAIN CONTENT -->
     <main class="container dashboard-container">
-        <!-- INCOMING DELIVERIES -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>Prihajajuče Dostave</h2>
-                <div id="incoming-deliveries" class="table-container">
-                    <p class="text-muted">Nalagam dostave...</p>
+                <h2>1. Prihajajoče dostave (od distributorja)</h2>
+                <p>Sprejmite zdravila, ki jih je distributor poslal v vašo lekarno.</p>
+                <div id="incoming-deliveries-list" class="table-container">
+                    <p class="text-muted">Nalagam...</p>
                 </div>
             </div>
         </section>
 
-        <!-- RECEIVE DELIVERY -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>Potrdi Sprejem Dostave</h2>
-                <p>Izberite dostavo in potrdite sprejem zdravil.</p>
-                
-                <div class="form-group">
-                    <label for="delivery-to-receive">Dostava:</label>
-                    <select id="delivery-to-receive" class="form-control">
-                        <option value="">-- Nalagam... --</option>
-                    </select>
+                <h2>2. Moj inventar</h2>
+                <div id="my-inventory-list" class="table-container">
+                    <p class="text-muted">Nalagam...</p>
                 </div>
-
-                <button id="btn-receive-delivery" class="btn btn-primary">
-                    ✅ Potrdi Sprejem
-                </button>
-                <p id="receive-error" class="error-message" style="display:none;"></p>
-                <p id="receive-success" class="success-message" style="display:none;"></p>
             </div>
         </section>
 
-        <!-- MEDICINE VISUALIZER -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>Pregled Zdravila</h2>
-                <p>Izberite zdravilo in si oglejte vse podrobnosti ter preverite avtentičnost.</p>
-                
-                <div class="form-group">
-                    <label for="medicine-to-view">Zdravilo:</label>
-                    <select id="medicine-to-view" class="form-control">
-                        <option value="">-- Izberite zdravilo --</option>
-                    </select>
-                </div>
-
-                <button id="btn-view-medicine" class="btn btn-primary">
-                    🔍 Prikaži Podrobnosti
-                </button>
-
-                <!-- Medicine Details Visualizer -->
+                <h2>3. Pregled zdravila</h2>
+                <p>Kliknite "Pregled" pri dostavi za podrobnosti in preverjanje verige.</p>
                 <div id="medicine-visualizer" style="display:none; margin-top: 20px; padding: 20px; background: #f8f9fa; border: 2px solid #dee2e6; border-radius: 5px;">
-                    <div id="visualizer-content">
-                        <!-- Populated by JS -->
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- MY INVENTORY -->
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>Moj Inventar</h2>
-                <div id="pharmacy-inventory" class="table-container">
-                    <p class="text-muted">Ni zdravil v inventarju...</p>
-                </div>
-            </div>
-        </section>
-
-        <!-- SUPPLY CHAIN HISTORY -->
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>Zgodovina Dostav</h2>
-                <div id="supply-chain-history" class="table-container">
-                    <p class="text-muted">Ni zgodovine dostav...</p>
+                    <div id="visualizer-content"></div>
                 </div>
             </div>
         </section>
     </main>
 
-    <!-- FOOTER -->
     <footer class="footer">
         <p>Nadzorna Plošča Lekarne | Sistem za Sledljivost Zdravil</p>
     </footer>

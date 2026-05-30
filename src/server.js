@@ -724,16 +724,15 @@ app.post('/api/medicines/create', async (req, res) => {
     }
 });
 
-// 8. ADD TO DELIVERY - Manufacturer adds medicine to delivery for specific pharmacy
+// 8. SEND TO DISTRIBUTOR - Manufacturer ships medicine to distributor
 app.post('/api/medicines/add-to-delivery', async (req, res) => {
     try {
-        const { sessionId, medicineId, quantity, targetPharmacyName, targetPharmacyWallet } = req.body;
+        const { sessionId, medicineId, quantity, targetDistributorName, targetDistributorWallet } = req.body;
 
-        if (!sessionId || !medicineId || !quantity || !targetPharmacyName) {
-            return res.status(400).json({ error: 'Missing required fields' });
+        if (!sessionId || !medicineId || !quantity || !targetDistributorWallet) {
+            return res.status(400).json({ error: 'Manjkajo obvezna polja (zdravilo, količina, distributor)' });
         }
 
-        // Validate session
         const userResult = await pool.query(
             'SELECT * FROM users WHERE session_id = $1 AND role = $2',
             [sessionId, 'manufacturer']
@@ -745,7 +744,15 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
 
         const manufacturer = userResult.rows[0];
 
-        // Get medicine
+        const distributorResult = await pool.query(
+            'SELECT * FROM users WHERE wallet_address = $1 AND role = $2',
+            [targetDistributorWallet, 'distributor']
+        );
+
+        if (distributorResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Distributor ni registriran' });
+        }
+
         const medicineResult = await pool.query(
             'SELECT * FROM medicines WHERE medicine_id = $1 AND manufacturer_wallet = $2',
             [medicineId, manufacturer.wallet_address]
@@ -756,49 +763,49 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
         }
 
         const medicine = medicineResult.rows[0];
+        const available = await getManufacturerAvailableQuantity(medicineId, manufacturer.wallet_address);
 
-        if (quantity > medicine.quantity) {
-            return res.status(400).json({ error: 'Not enough quantity available' });
+        if (quantity > available) {
+            return res.status(400).json({ error: `Na voljo je samo ${available} enot` });
         }
 
-        // Create delivery record
         const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
+        const distributorName = targetDistributorName || distributorResult.rows[0].company_name;
 
-        const deliveryResult = await pool.query(
-            `INSERT INTO deliveries 
-             (delivery_id, medicine_id, source_wallet, source_role, target_wallet, target_role, 
+        await pool.query(
+            `INSERT INTO deliveries
+             (delivery_id, medicine_id, source_wallet, source_role, target_wallet, target_role,
               target_pharmacy_name, quantity, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             RETURNING *`,
-            [deliveryId, medicineId, manufacturer.wallet_address, 'manufacturer', 
-             targetPharmacyWallet || 'TBD', 'pharmacy', targetPharmacyName, quantity, 'PENDING']
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [deliveryId, medicineId, manufacturer.wallet_address, 'manufacturer',
+             targetDistributorWallet, 'distributor', distributorName, quantity, 'PENDING']
         );
 
-        // Log to supply chain history
+        await pool.query(
+            `UPDATE medicines SET blockchain_status = 'IN_TRANSIT' WHERE medicine_id = $1`,
+            [medicineId]
+        );
+
         await pool.query(
             `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
              VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [medicineId, deliveryId, 'ADDED_TO_DELIVERY', manufacturer.wallet_address, 'manufacturer', 
-             manufacturer.did, JSON.stringify({ quantity, targetPharmacyName })]
+            [medicineId, deliveryId, 'SENT_TO_DISTRIBUTOR', manufacturer.wallet_address, 'manufacturer',
+             manufacturer.did, JSON.stringify({ quantity, targetDistributorName: distributorName })]
         );
 
         res.json({
             success: true,
-            message: 'Medicine added to delivery',
+            message: 'Zdravilo poslano distributorju',
             delivery: {
                 deliveryId,
                 medicineId,
-                medicineInfo: {
-                    name: medicine.name,
-                    batchNumber: medicine.batch_number,
-                    quantity: quantity
-                },
-                targetPharmacyName,
+                quantity,
+                targetDistributorName: distributorName,
                 status: 'PENDING'
             }
         });
     } catch (error) {
-        console.error('Add to delivery error:', error.message);
+        console.error('Send to distributor error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -824,10 +831,13 @@ app.get('/api/medicines/my-medicines', async (req, res) => {
         const manufacturer = userResult.rows[0];
 
         const medicinesResult = await pool.query(
-            `SELECT m.*, 
-                    COUNT(d.id) as delivery_count
+            `SELECT m.*,
+                    COALESCE(SUM(d.quantity), 0) AS shipped_quantity,
+                    m.quantity - COALESCE(SUM(d.quantity), 0) AS available_quantity
              FROM medicines m
              LEFT JOIN deliveries d ON m.medicine_id = d.medicine_id
+                AND d.source_wallet = m.manufacturer_wallet
+                AND d.source_role = 'manufacturer'
              WHERE m.manufacturer_wallet = $1 AND m.is_active = TRUE
              GROUP BY m.id
              ORDER BY m.created_at DESC`,
@@ -846,8 +856,8 @@ app.get('/api/medicines/my-medicines', async (req, res) => {
 
 // ===== DISTRIBUTOR ENDPOINTS =====
 
-// 10. GET AVAILABLE MEDICINES - Distributor sees medicines ready for distribution
-app.get('/api/distributor/available-medicines', async (req, res) => {
+// 10. DISTRIBUTOR: Incoming deliveries from manufacturers
+app.get('/api/distributor/incoming-deliveries', async (req, res) => {
     try {
         const { sessionId } = req.query;
 
@@ -855,33 +865,164 @@ app.get('/api/distributor/available-medicines', async (req, res) => {
             return res.status(401).json({ error: 'Invalid session' });
         }
 
-        const userResult = await pool.query(
-            'SELECT * FROM users WHERE session_id = $1 AND role = $2',
-            [sessionId, 'distributor']
-        );
-
-        if (userResult.rows.length === 0) {
+        const distributorWallet = await getSessionWallet(sessionId);
+        if (!distributorWallet) {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        // Get medicines that are MANUFACTURED and not yet distributed
-        const medicinesResult = await pool.query(
-            `SELECT m.*, 
-                    COUNT(DISTINCT d.id) as delivery_count,
-                    SUM(CASE WHEN d.status != 'PENDING' THEN d.quantity ELSE 0 END) as distributed_quantity
-             FROM medicines m
-             LEFT JOIN deliveries d ON m.medicine_id = d.medicine_id
-             WHERE m.blockchain_status = 'MANUFACTURED' AND m.is_active = TRUE
-             GROUP BY m.id
-             ORDER BY m.created_at DESC`
+        const userResult = await pool.query(
+            'SELECT role FROM users WHERE wallet_address = $1',
+            [distributorWallet]
         );
 
-        res.json({
-            success: true,
-            medicines: medicinesResult.rows
-        });
+        if (userResult.rows.length === 0 || userResult.rows[0].role !== 'distributor') {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const result = await pool.query(
+            `SELECT d.delivery_id, d.medicine_id, d.quantity, d.status, d.created_at,
+                    m.name AS medicine_name, m.batch_number, m.expiry_date,
+                    u.company_name AS manufacturer_name
+             FROM deliveries d
+             JOIN medicines m ON d.medicine_id = m.medicine_id
+             JOIN users u ON d.source_wallet = u.wallet_address
+             WHERE d.target_wallet = $1
+               AND d.source_role = 'manufacturer'
+               AND d.status = 'PENDING'
+               AND d.is_active = TRUE
+             ORDER BY d.created_at DESC`,
+            [distributorWallet]
+        );
+
+        res.json({ success: true, deliveries: result.rows });
     } catch (error) {
-        console.error('Get available medicines error:', error.message);
+        console.error('Get distributor incoming deliveries error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 10b. DISTRIBUTOR: Receive delivery from manufacturer
+app.post('/api/distributor/receive-delivery', async (req, res) => {
+    try {
+        const { sessionId, deliveryId } = req.body;
+
+        if (!sessionId || !deliveryId) {
+            return res.status(400).json({ error: 'Manjkajo obvezna polja' });
+        }
+
+        const distributorWallet = await getSessionWallet(sessionId);
+        if (!distributorWallet) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const result = await pool.query(
+            `UPDATE deliveries
+             SET status = 'RECEIVED', received_at = CURRENT_TIMESTAMP
+             WHERE delivery_id = $1 AND target_wallet = $2
+               AND source_role = 'manufacturer' AND status = 'PENDING'
+             RETURNING medicine_id, quantity`,
+            [deliveryId, distributorWallet]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Dostava ni najdena ali je že sprejeta' });
+        }
+
+        const { medicine_id: medicineId, quantity } = result.rows[0];
+
+        const distributorResult = await pool.query(
+            'SELECT * FROM users WHERE wallet_address = $1',
+            [distributorWallet]
+        );
+        const distributor = distributorResult.rows[0];
+
+        await pool.query(
+            `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [medicineId, deliveryId, 'RECEIVED_BY_DISTRIBUTOR', distributorWallet, 'distributor',
+             distributor.did, JSON.stringify({ quantity, receivedAt: new Date().toISOString() })]
+        );
+
+        res.json({ success: true, message: 'Dostava uspešno sprejeta v inventar' });
+    } catch (error) {
+        console.error('Distributor receive delivery error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 10c. DISTRIBUTOR: Get my inventory (stock ready to forward)
+app.get('/api/distributor/my-inventory', async (req, res) => {
+    try {
+        const { sessionId } = req.query;
+
+        if (!sessionId) {
+            return res.status(401).json({ error: 'Invalid session' });
+        }
+
+        const distributorWallet = await getSessionWallet(sessionId);
+        if (!distributorWallet) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const result = await pool.query(
+            `SELECT m.medicine_id, m.name, m.batch_number, m.expiry_date, m.blockchain_status,
+                    COALESCE(received.total, 0) - COALESCE(sent.total, 0) AS available_quantity,
+                    COALESCE(received.total, 0) AS received_quantity,
+                    COALESCE(sent.total, 0) AS forwarded_quantity
+             FROM medicines m
+             JOIN (
+                 SELECT medicine_id, SUM(quantity) AS total
+                 FROM deliveries
+                 WHERE target_wallet = $1 AND source_role = 'manufacturer' AND status = 'RECEIVED'
+                 GROUP BY medicine_id
+             ) received ON m.medicine_id = received.medicine_id
+             LEFT JOIN (
+                 SELECT medicine_id, SUM(quantity) AS total
+                 FROM deliveries
+                 WHERE source_wallet = $1 AND source_role = 'distributor'
+                   AND status IN ('IN_TRANSIT', 'DELIVERED')
+                 GROUP BY medicine_id
+             ) sent ON m.medicine_id = sent.medicine_id
+             WHERE COALESCE(received.total, 0) - COALESCE(sent.total, 0) > 0
+             ORDER BY m.name`,
+            [distributorWallet]
+        );
+
+        res.json({ success: true, inventory: result.rows });
+    } catch (error) {
+        console.error('Get distributor inventory error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 10d. DISTRIBUTOR: Outgoing shipment history
+app.get('/api/distributor/outgoing-deliveries', async (req, res) => {
+    try {
+        const { sessionId } = req.query;
+
+        if (!sessionId) {
+            return res.status(401).json({ error: 'Invalid session' });
+        }
+
+        const distributorWallet = await getSessionWallet(sessionId);
+        if (!distributorWallet) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const result = await pool.query(
+            `SELECT d.delivery_id, d.medicine_id, d.quantity, d.status, d.created_at,
+                    m.name AS medicine_name, m.batch_number,
+                    d.target_pharmacy_name AS pharmacy_name
+             FROM deliveries d
+             JOIN medicines m ON d.medicine_id = m.medicine_id
+             WHERE d.source_wallet = $1 AND d.source_role = 'distributor'
+             ORDER BY d.created_at DESC`,
+            [distributorWallet]
+        );
+
+        res.json({ success: true, deliveries: result.rows });
+    } catch (error) {
+        console.error('Get distributor outgoing deliveries error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -913,7 +1054,8 @@ app.get('/api/pharmacy/incoming-deliveries', async (req, res) => {
             `SELECT d.*, m.name as medicine_name, m.batch_number, m.expiry_date, m.ipfs_hash, m.blockchain_status
              FROM deliveries d
              JOIN medicines m ON d.medicine_id = m.medicine_id
-             WHERE d.target_wallet = $1 AND d.status IN ('PENDING', 'IN_TRANSIT') AND d.is_active = TRUE
+             WHERE d.target_wallet = $1 AND d.status = 'IN_TRANSIT'
+               AND d.source_role = 'distributor' AND d.is_active = TRUE
              ORDER BY d.created_at DESC`,
             [pharmacy.wallet_address]
         );
@@ -1006,121 +1148,66 @@ app.post('/api/pharmacy/verify-medicine', async (req, res) => {
     }
 });
 
-// 10. DISTRIBUTOR: Get my inventory
-app.get('/api/distributor/my-inventory', async (req, res) => {
-    try {
-        const { sessionId } = req.query;
-
-        if (!sessionId) {
-            return res.status(401).json({ error: 'Invalid or expired session' });
-        }
-
-        // Validate session
-        if (!(await isSessionValid(sessionId))) {
-            return res.status(401).json({ error: 'Invalid or expired session' });
-        }
-
-        // Get distributor wallet from session
-        const sessionResult = await pool.query(
-            'SELECT wallet_address FROM sessions WHERE session_id = $1',
-            [sessionId]
-        );
-
-        if (sessionResult.rows.length === 0) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-
-        const distributorWallet = sessionResult.rows[0].wallet_address;
-
-        // Get medicines where distributor is either source or target
-        const result = await pool.query(`
-            SELECT DISTINCT m.medicine_id, m.id, m.name, m.batch_number, m.expiry_date, 
-                   d.quantity, d.created_at as received_at, d.target_role,
-                   CASE WHEN d.target_role = 'pharmacy' THEN true ELSE false END as sent_to_pharmacy,
-                   MAX(CASE WHEN d.target_role = 'pharmacy' THEN d.created_at ELSE NULL END) as sent_at
-            FROM medicines m
-            JOIN deliveries d ON m.medicine_id = d.medicine_id
-            WHERE d.source_wallet = $1 OR (d.target_wallet = $1 AND d.source_role = 'manufacturer')
-            GROUP BY m.id, m.medicine_id, m.name, m.batch_number, m.expiry_date, d.quantity, d.created_at, d.target_role
-            ORDER BY d.created_at DESC
-        `, [distributorWallet]);
-        
-        res.json({
-            success: true,
-            inventory: result.rows.map(row => ({
-                medicineId: row.medicine_id,
-                medicineName: row.name,
-                batchNumber: row.batch_number,
-                quantity: row.quantity,
-                expiryDate: row.expiry_date,
-                receivedAt: row.received_at,
-                sentToPharmacy: row.sent_to_pharmacy,
-                sentAt: row.sent_at
-            }))
-        });
-    } catch (error) {
-        console.error('Get inventory error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
 // 11. DISTRIBUTOR: Send medicine to pharmacy
 app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
     try {
         const { sessionId, medicineId, quantity, targetPharmacyName, targetPharmacyWallet } = req.body;
 
         if (!sessionId || !medicineId || !quantity || !targetPharmacyName || !targetPharmacyWallet) {
-            return res.status(400).json({ error: 'Missing required fields' });
+            return res.status(400).json({ error: 'Manjkajo obvezna polja' });
         }
 
-        // Validate session and get distributor wallet
-        const sessionResult = await pool.query(
-            'SELECT wallet_address FROM sessions WHERE session_id = $1',
-            [sessionId]
-        );
-
-        if (sessionResult.rows.length === 0) {
+        const distributorWallet = await getSessionWallet(sessionId);
+        if (!distributorWallet) {
             return res.status(401).json({ error: 'Unauthorized or invalid session' });
         }
 
-        const distributorWallet = sessionResult.rows[0].wallet_address;
+        const distributorResult = await pool.query(
+            'SELECT * FROM users WHERE wallet_address = $1 AND role = $2',
+            [distributorWallet, 'distributor']
+        );
 
-        // Verify the target pharmacy exists and is actually a pharmacy
+        if (distributorResult.rows.length === 0) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
         const pharmacyResult = await pool.query(
             'SELECT * FROM users WHERE wallet_address = $1 AND role = $2',
             [targetPharmacyWallet, 'pharmacy']
         );
 
         if (pharmacyResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Target pharmacy not found' });
+            return res.status(404).json({ error: 'Lekarna ni registrirana' });
         }
 
-        // Create new delivery from distributor to pharmacy
-        const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
-        const deliveryResult = await pool.query(`
-            INSERT INTO deliveries 
-            (delivery_id, medicine_id, source_wallet, source_role, target_wallet, target_role, target_pharmacy_name, quantity, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING *
-        `, [deliveryId, medicineId, distributorWallet, 'distributor', targetPharmacyWallet, 'pharmacy', targetPharmacyName, quantity, 'IN_TRANSIT']);
+        const available = await getDistributorAvailableQuantity(medicineId, distributorWallet);
+        if (quantity > available) {
+            return res.status(400).json({ error: `Na voljo je samo ${available} enot v inventarju` });
+        }
 
-        // Get distributor info for history logging
-        const distributorResult = await pool.query(
-            'SELECT * FROM users WHERE wallet_address = $1',
-            [distributorWallet]
+        const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
+
+        await pool.query(
+            `INSERT INTO deliveries
+             (delivery_id, medicine_id, source_wallet, source_role, target_wallet, target_role,
+              target_pharmacy_name, quantity, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [deliveryId, medicineId, distributorWallet, 'distributor', targetPharmacyWallet,
+             'pharmacy', targetPharmacyName, quantity, 'IN_TRANSIT']
         );
 
         const distributor = distributorResult.rows[0];
 
-        // Log action to supply chain history
-        await pool.query(`
-            INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [medicineId, deliveryId, 'FORWARDED_TO_PHARMACY', distributorWallet, 'distributor', distributor.did, JSON.stringify({ quantity, targetPharmacyName })]);
+        await pool.query(
+            `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [medicineId, deliveryId, 'FORWARDED_TO_PHARMACY', distributorWallet, 'distributor',
+             distributor.did, JSON.stringify({ quantity, targetPharmacyName })]
+        );
 
         res.json({
             success: true,
-            message: 'Medicine forwarded to pharmacy',
+            message: 'Zdravilo poslano v lekarno',
             delivery: {
                 deliveryId,
                 medicineId,
@@ -1159,8 +1246,8 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
         // Update delivery status - only if targeting this pharmacy
         const result = await pool.query(`
             UPDATE deliveries SET status = 'DELIVERED', received_at = CURRENT_TIMESTAMP
-            WHERE delivery_id = $1 AND target_wallet = $2
-            RETURNING medicine_id, status
+            WHERE delivery_id = $1 AND target_wallet = $2 AND status = 'IN_TRANSIT'
+            RETURNING medicine_id, status, quantity
         `, [deliveryId, pharmacyWallet]);
 
         if (result.rows.length === 0) {
@@ -1238,14 +1325,14 @@ app.get('/api/pharmacy/my-inventory', async (req, res) => {
         res.json({
             success: true,
             inventory: result.rows.map(row => ({
-                medicineId: row.medicine_id,
-                medicineName: row.name,
-                batchNumber: row.batch_number,
+                medicine_id: row.medicine_id,
+                name: row.name,
+                batch_number: row.batch_number,
                 quantity: row.quantity,
-                expiryDate: row.expiry_date,
-                receivedAt: row.received_at,
-                blockchainStatus: row.blockchain_status,
-                ipfsHash: row.ipfs_hash
+                expiry_date: row.expiry_date,
+                received_at: row.received_at,
+                blockchain_status: row.blockchain_status,
+                ipfs_hash: row.ipfs_hash
             }))
         });
     } catch (error) {
@@ -1385,7 +1472,38 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// 16. PHARMACIES LIST - Get all pharmacy users
+// 16. DISTRIBUTORS LIST - Get all distributor users
+app.get('/api/distributors/list', async (req, res) => {
+    try {
+        const { sessionId } = req.query;
+
+        if (!sessionId) {
+            return res.status(401).json({ error: 'Invalid or expired session' });
+        }
+
+        if (!(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Invalid or expired session' });
+        }
+
+        const distributors = await pool.query(
+            'SELECT wallet_address, company_name FROM users WHERE role = $1 ORDER BY company_name',
+            ['distributor']
+        );
+
+        res.json({
+            success: true,
+            distributors: distributors.rows.map(d => ({
+                walletAddress: d.wallet_address,
+                name: d.company_name
+            }))
+        });
+    } catch (error) {
+        console.error('Get distributors error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 17. PHARMACIES LIST - Get all pharmacy users
 app.get('/api/pharmacies/list', async (req, res) => {
     try {
         const { sessionId } = req.query;
@@ -1418,5 +1536,101 @@ app.get('/api/pharmacies/list', async (req, res) => {
     }
 });
 
-// 17. HEALTH CHECK
-app.get('/api/hea
+// 18. PHARMACY: Verify medicine on blockchain (GET alias for dashboard)
+app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
+    try {
+        const { sessionId, medicineId, txHash } = req.query;
+
+        if (!sessionId) {
+            return res.status(401).json({ error: 'Invalid session' });
+        }
+
+        if (!(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Invalid session' });
+        }
+
+        let medicine = null;
+        if (medicineId) {
+            const medicineResult = await pool.query(
+                'SELECT * FROM medicines WHERE medicine_id = $1',
+                [medicineId]
+            );
+            medicine = medicineResult.rows[0] || null;
+        }
+
+        let blockchainData = null;
+        const lookupId = medicine?.medicine_id || medicineId;
+        if (lookupId) {
+            try {
+                if (!global.blockchain && process.env.BLOCKCHAIN_PRIVATE_KEY) {
+                    global.blockchain = initializeBlockchain(SEPOLIA_RPC_URL, process.env.BLOCKCHAIN_PRIVATE_KEY, CONTRACT_ADDRESS);
+                }
+                if (global.blockchain) {
+                    blockchainData = await getMedicineFromBlockchain(lookupId);
+                }
+            } catch (error) {
+                console.log(`Blockchain verify note: ${error.message}`);
+            }
+        }
+
+        const verified = Boolean(
+            blockchainData || medicine?.blockchain_tx_hash || txHash
+        );
+
+        res.json({
+            success: true,
+            verified,
+            status: blockchainData?.status || medicine?.blockchain_status || 'UNKNOWN',
+            txHash: txHash || medicine?.blockchain_tx_hash || null,
+            blockchain: blockchainData
+        });
+    } catch (error) {
+        console.error('Verify blockchain error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 19. HEALTH CHECK
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        services: {
+            walt_id: WALT_API,
+            ethereum: SEPOLIA_RPC_URL ? 'configured' : 'not configured',
+            database: 'connected'
+        }
+    });
+});
+
+// ===== ERROR HANDLING =====
+app.use((err, req, res, next) => {
+    console.error('Unhandled error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+});
+
+// ===== START SERVER =====
+async function startServer() {
+    try {
+        // Test database connection
+        await pool.query('SELECT NOW()');
+        console.log('✓ Database connection successful');
+        
+        app.listen(PORT, () => {
+            console.log(`\n${'='.repeat(60)}`);
+            console.log(`✓ Server running on http://localhost:${PORT}`);
+            console.log(`✓ Walt.id API: ${WALT_API}`);
+            console.log(`✓ Ethereum RPC: ${SEPOLIA_RPC_URL ? 'configured' : 'NOT configured'}`);
+            console.log(`✓ Contract: ${CONTRACT_ADDRESS || 'NOT configured'}`);
+            console.log(`✓ Database: app-postgres on port ${process.env.APP_POSTGRES_DB_PORT || 5433}`);
+            console.log(`✓ PgAdmin: http://localhost:${process.env.PG_ADMIN_PORT || 5050}`);
+            console.log(`✓ Session expiry: ${SESSION_EXPIRY_HOURS} hours`);
+            console.log('\n' + '='.repeat(60) + '\n');
+        });
+    } catch (error) {
+        console.error('Failed to start server:', error.message);
+        process.exit(1);
+    }
+}
+
+startServer();

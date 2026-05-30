@@ -7,84 +7,56 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- NAVBAR -->
     <nav class="navbar">
         <div class="navbar-container">
             <h1 class="navbar-title">📦 Nadzorna Plošča Distributorja</h1>
             <div class="navbar-right">
                 <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
-                <button id="btn-back-home" class="btn-logout">Nazaj na Domov</button>
+                <button id="btn-back-home" class="btn-logout">Odjava</button>
             </div>
         </div>
     </nav>
 
-    <!-- MAIN CONTENT -->
     <main class="container dashboard-container">
-        <!-- AVAILABLE MEDICINES FROM MANUFACTURERS -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>Dostopna Zdravila od Proizvajalcev</h2>
-                <p>Prevzemite zdravila od proizvajalcev in jih pošljite farmacijam.</p>
-                
-                <div id="available-medicines" class="table-container">
-                    <p class="text-muted">Nalagam zdravila...</p>
+                <h2>1. Prihajajoče pošiljke (od proizvajalca)</h2>
+                <p>Sprejmite zdravila, ki jih je proizvajalec poslal distributorju.</p>
+                <div id="incoming-deliveries-list" class="table-container">
+                    <p class="text-muted">Nalagam...</p>
                 </div>
             </div>
         </section>
 
-        <!-- FORWARD MEDICINE TO PHARMACY -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>Pošlji Zdravilo Lekarni</h2>
-                <p>Izberite zdravilo in ga pošljite ciljna lekarni.</p>
-                
-                <div class="form-group">
-                    <label for="medicine-to-forward">Zdravilo:</label>
-                    <select id="medicine-to-forward" class="form-control">
-                        <option value="">-- Nalagam... --</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="forward-quantity">Količina:</label>
-                    <input type="number" id="forward-quantity" class="form-control" placeholder="Število enot" min="1">
-                </div>
-
-                <div class="form-group">
-                    <label for="target-pharmacy-forward">Ciljna Lekarna:</label>
-                    <input type="text" id="target-pharmacy-forward" class="form-control" placeholder="npr. Lekarna Ljubljana - Mestni trg" readonly>
-                </div>
-
-                <button id="btn-forward-medicine" class="btn btn-primary">
-                    🚚 Pošlji Lekarni
-                </button>
-                <p id="forward-error" class="error-message" style="display:none;"></p>
-                <p id="forward-success" class="success-message" style="display:none;"></p>
-            </div>
-        </section>
-
-        <!-- MY INVENTORY -->
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>Moj Inventar</h2>
-                <div id="inventory-list" class="table-container">
-                    <p class="text-muted">Ni še prejenih zdravil...</p>
+                <h2>2. Moj inventar</h2>
+                <p>Zdravila, ki jih imate na zalogi in jih lahko pošljete v lekarno.</p>
+                <div id="my-inventory-list" class="table-container">
+                    <p class="text-muted">Nalagam...</p>
                 </div>
             </div>
         </section>
 
-        <!-- SHIPMENT HISTORY -->
         <section class="dashboard-section">
             <div class="card">
-                <h2>Zgodovino Pošiljk</h2>
-                <div id="shipment-history" class="table-container">
-                    <p class="text-muted">Ni še pošiljk...</p>
+                <h2>3. Pošlji v lekarno</h2>
+                <div id="forward-medicine-panel">
+                    <p class="text-muted">Iz inventarja izberite zdravilo in kliknite "Pošlji v lekarno".</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="dashboard-section">
+            <div class="card">
+                <h2>Zgodovina pošiljk v lekarne</h2>
+                <div id="shipment-history-list" class="table-container">
+                    <p class="text-muted">Nalagam...</p>
                 </div>
             </div>
         </section>
     </main>
 
-    <!-- FOOTER -->
     <footer class="footer">
         <p>Nadzorna Plošča Distributorja | Sistem za Sledljivost Zdravil</p>
     </footer>
