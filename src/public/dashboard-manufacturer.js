@@ -177,6 +177,7 @@ function attachEventListeners() {
                     body: JSON.stringify({ sessionId: currentSessionId })
                 });
             }
+            await disconnectMetaMask();
         } catch (error) {
             console.error('Logout error:', error);
         } finally {

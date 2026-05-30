@@ -17,10 +17,8 @@ import axios from 'axios';
 import { ethers } from 'ethers';
 import { Pool } from 'pg';
 import rateLimit from 'express-rate-limit';
-import { v4 as uuidv4 } from 'uuid';
 import { uploadProductData } from './ipfs.js';
 import { initializeBlockchain, registerMedicineOnBlockchain, getMedicineFromBlockchain, getMedicineHistory } from './blockchain.js';
-import { url } from 'inspector';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -81,6 +79,47 @@ function sanitizeInput(input) {
 
 function generateSecureSessionId() {
     return `sess_${crypto.randomBytes(32).toString('hex')}`;
+}
+
+async function getManufacturerAvailableQuantity(medicineId, manufacturerWallet) {
+    const result = await pool.query(
+        `SELECT m.quantity - COALESCE(SUM(d.quantity), 0) AS available
+         FROM medicines m
+         LEFT JOIN deliveries d ON d.medicine_id = m.medicine_id
+            AND d.source_wallet = $2
+            AND d.source_role = 'manufacturer'
+         WHERE m.medicine_id = $1 AND m.manufacturer_wallet = $2
+         GROUP BY m.quantity`,
+        [medicineId, manufacturerWallet]
+    );
+    return parseInt(result.rows[0]?.available ?? 0, 10);
+}
+
+async function getDistributorAvailableQuantity(medicineId, distributorWallet) {
+    const result = await pool.query(
+        `SELECT
+            COALESCE((
+                SELECT SUM(quantity) FROM deliveries
+                WHERE medicine_id = $1 AND target_wallet = $2
+                  AND source_role = 'manufacturer' AND status = 'RECEIVED'
+            ), 0) -
+            COALESCE((
+                SELECT SUM(quantity) FROM deliveries
+                WHERE medicine_id = $1 AND source_wallet = $2
+                  AND source_role = 'distributor'
+                  AND status IN ('IN_TRANSIT', 'DELIVERED')
+            ), 0) AS available`,
+        [medicineId, distributorWallet]
+    );
+    return parseInt(result.rows[0]?.available ?? 0, 10);
+}
+
+async function getSessionWallet(sessionId) {
+    const result = await pool.query(
+        'SELECT wallet_address FROM sessions WHERE session_id = $1',
+        [sessionId]
+    );
+    return result.rows[0]?.wallet_address || null;
 }
 
 // ===== HELPER: Walt.id API calls =====
@@ -559,7 +598,7 @@ app.post('/api/medicines/create', async (req, res) => {
             });
         }
 
-        const medicineId = `MED-${uuidv4()}`;
+        const medicineId = `MED-${crypto.randomUUID()}`;
 
         // Start transaction
         await client.query('BEGIN');
@@ -723,7 +762,7 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
         }
 
         // Create delivery record
-        const deliveryId = `DELIVERY-${uuidv4()}`;
+        const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
 
         const deliveryResult = await pool.query(
             `INSERT INTO deliveries 
@@ -1057,7 +1096,7 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
         }
 
         // Create new delivery from distributor to pharmacy
-        const deliveryId = `DELIVERY-${uuidv4()}`;
+        const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
         const deliveryResult = await pool.query(`
             INSERT INTO deliveries 
             (delivery_id, medicine_id, source_wallet, source_role, target_wallet, target_role, target_pharmacy_name, quantity, status)
@@ -1380,46 +1419,4 @@ app.get('/api/pharmacies/list', async (req, res) => {
 });
 
 // 17. HEALTH CHECK
-app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        timestamp: new Date().toISOString(),
-        services: {
-            walt_id: WALT_API,
-            ethereum: SEPOLIA_RPC_URL ? 'configured' : 'not configured',
-            database: 'connected'
-        }
-    });
-});
-
-// ===== ERROR HANDLING =====
-app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-});
-
-// ===== START SERVER =====
-async function startServer() {
-    try {
-        // Test database connection
-        await pool.query('SELECT NOW()');
-        console.log('✓ Database connection successful');
-        
-        app.listen(PORT, () => {
-            console.log(`\n${'='.repeat(60)}`);
-            console.log(`✓ Server running on http://localhost:${PORT}`);
-            console.log(`✓ Walt.id API: ${WALT_API}`);
-            console.log(`✓ Ethereum RPC: ${SEPOLIA_RPC_URL ? 'configured' : 'NOT configured'}`);
-            console.log(`✓ Contract: ${CONTRACT_ADDRESS || 'NOT configured'}`);
-            console.log(`✓ Database: app-postgres on port ${process.env.APP_POSTGRES_DB_PORT || 5433}`);
-            console.log(`✓ PgAdmin: http://localhost:${process.env.PG_ADMIN_PORT || 5050}`);
-            console.log(`✓ Session expiry: ${SESSION_EXPIRY_HOURS} hours`);
-            console.log('\n' + '='.repeat(60) + '\n');
-        });
-    } catch (error) {
-        console.error('Failed to start server:', error.message);
-        process.exit(1);
-    }
-}
-
-startServer();
+app.get('/api/hea
