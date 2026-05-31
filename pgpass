@@ -1,0 +1,4 @@
+app-postgres:5432:diplomska_app:app_user:app_password_secure
+app-postgres:5432:*:app_user:app_password_secure
+postgres:5432:waltid:waltid:waltid
+postgres:5432:*:waltid:waltid

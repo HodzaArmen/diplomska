@@ -1,0 +1,24 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Diplomska App Baza",
+      "Group": "Razvoj",
+      "Host": "app-postgres",
+      "Port": 5432,
+      "MaintenanceDB": "diplomska_app",
+      "Username": "app_user",
+      "PassFile": "/pgpass",
+      "SSLMode": "prefer"
+    },
+    "2": {
+      "Name": "Walt.id Wallet API Baza",
+      "Group": "Razvoj",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "waltid",
+      "Username": "waltid",
+      "PassFile": "/pgpass",
+      "SSLMode": "prefer"
+    }
+  }
+}
