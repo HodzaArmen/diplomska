@@ -19,6 +19,7 @@ import { Pool } from 'pg';
 import rateLimit from 'express-rate-limit';
 import { uploadProductData } from './ipfs.js';
 import { initializeBlockchain, registerMedicineOnBlockchain, getMedicineFromBlockchain, getMedicineHistory } from './blockchain.js';
+import { issueMedicineCredential, issueTransportCredential, verifyCredentialJwt } from './waltid-ssi.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -44,6 +45,8 @@ app.use('/api/', apiLimiter);
 
 // ===== CONFIGURATION =====
 const WALT_API = process.env.WALT_ID_API_URL;
+const WALT_ISSUER_API = process.env.WALT_ISSUER_API_URL || 'http://issuer-api:7002';
+const WALT_VERIFIER_API = process.env.WALT_VERIFIER_API_URL || 'http://verifier-api:7003';
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const PORT = process.env.PORT || 3000;
@@ -129,12 +132,59 @@ function formatDateOnly(value) {
     return date.toISOString().slice(0, 10);
 }
 
+function getBlockchainPrivateKey() {
+    return process.env.BLOCKCHAIN_PRIVATE_KEY
+        || process.env.PRIVATE_KEY_ACCOUNT_1
+        || process.env.PRIVATE_KEY
+        || null;
+}
+
+function getIpfsLinks(ipfsHash) {
+    if (!ipfsHash) return null;
+    const hash = ipfsHash.replace(/^ipfs:\/\//, '');
+    return {
+        hash,
+        ipfsIo: `https://ipfs.io/ipfs/${hash}`,
+        pinata: `https://gateway.pinata.cloud/ipfs/${hash}`
+    };
+}
+
+function extractJwtFromVcCredential(vcCredentialRaw) {
+    if (!vcCredentialRaw) return null;
+    try {
+        const parsed = typeof vcCredentialRaw === 'string'
+            ? JSON.parse(vcCredentialRaw)
+            : vcCredentialRaw;
+        if (typeof parsed === 'string' && parsed.includes('.')) {
+            return parsed;
+        }
+        if (parsed.signedJwt) return parsed.signedJwt;
+        if (parsed.jwt) return parsed.jwt;
+    } catch {
+        if (typeof vcCredentialRaw === 'string' && vcCredentialRaw.includes('.')) {
+            return vcCredentialRaw;
+        }
+    }
+    return null;
+}
+
+async function ensureBlockchain() {
+    if (global.blockchain) return global.blockchain;
+    const privateKey = getBlockchainPrivateKey();
+    if (!privateKey || !SEPOLIA_RPC_URL || !CONTRACT_ADDRESS) {
+        return null;
+    }
+    global.blockchain = initializeBlockchain(SEPOLIA_RPC_URL, privateKey, CONTRACT_ADDRESS);
+    return global.blockchain;
+}
+
 const SUPPLY_CHAIN_ACTION_LABELS = {
     CREATED: 'Ustvarjeno',
     SENT_TO_DISTRIBUTOR: 'Poslano distributorju',
     RECEIVED_BY_DISTRIBUTOR: 'Sprejeto pri distributorju',
     FORWARDED_TO_PHARMACY: 'Poslano v lekarno',
     RECEIVED_AT_PHARMACY: 'Sprejeto v lekarni',
+    VC_VERIFIED_AT_PHARMACY: 'VC preverjen v lekarni',
     ADDED_TO_DELIVERY: 'Pošiljka ustvarjena (zastarelo)'
 };
 
@@ -632,23 +682,47 @@ app.post('/api/medicines/create', async (req, res) => {
 
         const medicine = medicineInsert.rows[0];
 
-        // 2. Create VC credential (backend automation)
-        const vcData = {
-            "@context": ["https://www.w3.org/2018/credentials/v1"],
-            "type": ["VerifiableCredential", "MedicineCredential"],
-            "issuer": user.did,
-            "issuanceDate": new Date().toISOString(),
-            "credentialSubject": {
-                "medicineId": medicineId,
-                "name": medicineName,
-                "batchNumber": batchNumber,
-                "quantity": quantity,
-                "expiryDate": expiryDate,
-                "manufacturer": user.company_name,
-                "manufacturerDID": user.did,
-                "description": description
-            }
-        };
+        // 2. Issue signed VC via Walt.id Issuer API
+        let vcCredential = null;
+        let vcJwt = null;
+        let vcSigned = false;
+        try {
+            const issued = await issueMedicineCredential(
+                {
+                    medicineId,
+                    name: medicineName,
+                    batchNumber,
+                    quantity,
+                    expiryDate,
+                    description: description || ''
+                },
+                user
+            );
+            vcJwt = issued.jwt;
+            vcCredential = { signedJwt: vcJwt, issuerDid: issued.issuerDid, signed: true };
+            vcSigned = true;
+            console.log(`✓ Medicine VC issued via Walt.id Issuer`);
+        } catch (vcError) {
+            console.error(`✗ Walt.id VC issuance failed: ${vcError.message}`);
+            vcCredential = {
+                '@context': ['https://www.w3.org/2018/credentials/v1'],
+                type: ['VerifiableCredential', 'MedicineCredential'],
+                issuer: user.did,
+                issuanceDate: new Date().toISOString(),
+                credentialSubject: {
+                    medicineId,
+                    name: medicineName,
+                    batchNumber,
+                    quantity,
+                    expiryDate,
+                    manufacturer: user.company_name,
+                    manufacturerDID: user.did,
+                    description: description || ''
+                },
+                signed: false,
+                error: vcError.message
+            };
+        }
 
         // 3. Upload to IPFS (using the ipfs.js helper)
         let ipfsHash = null;
@@ -671,26 +745,26 @@ app.post('/api/medicines/create', async (req, res) => {
             // Continue anyway - blockchain registration might still work
         }
 
-        // 4. Register on blockchain (backend automation)
+        // 4. Register on blockchain
         let blockchainTxHash = null;
         let blockchainStatus = null;
+        let blockchainError = null;
         try {
-            if (!global.blockchain) {
-                const privateKey = process.env.BLOCKCHAIN_PRIVATE_KEY;
-                if (privateKey) {
-                    global.blockchain = initializeBlockchain(SEPOLIA_RPC_URL, privateKey, CONTRACT_ADDRESS);
-                }
-            }
-
-            if (global.blockchain && ipfsHash) {
+            if (await ensureBlockchain() && ipfsHash) {
                 const receipt = await registerMedicineOnBlockchain(medicineId, ipfsHash);
-                blockchainTxHash = receipt?.hash || receipt?.transactionHash;
+                blockchainTxHash = receipt?.hash || receipt?.transactionHash || null;
                 blockchainStatus = 'MANUFACTURED';
                 console.log(`✓ Medicine registered on blockchain: ${blockchainTxHash}`);
+            } else if (!getBlockchainPrivateKey()) {
+                blockchainError = 'Manjka BLOCKCHAIN_PRIVATE_KEY ali PRIVATE_KEY_ACCOUNT_1 v .env';
+            } else if (!ipfsHash) {
+                blockchainError = 'Manjka IPFS hash (Pinata)';
+            } else if (!SEPOLIA_RPC_URL || !CONTRACT_ADDRESS) {
+                blockchainError = 'Manjka SEPOLIA_RPC_URL ali CONTRACT_ADDRESS';
             }
         } catch (error) {
+            blockchainError = error.message;
             console.error(`✗ Blockchain registration failed: ${error.message}`);
-            // Continue - medicine is still recorded in database
         }
 
         // 5. Update medicine with IPFS hash and blockchain info
@@ -698,7 +772,7 @@ app.post('/api/medicines/create', async (req, res) => {
             `UPDATE medicines 
              SET ipfs_hash = $1, blockchain_tx_hash = $2, blockchain_status = $3, vc_credential = $4
              WHERE medicine_id = $5`,
-            [ipfsHash, blockchainTxHash, blockchainStatus || 'MANUFACTURED', JSON.stringify(vcData), medicineId]
+            [ipfsHash, blockchainTxHash, blockchainStatus || 'MANUFACTURED', JSON.stringify(vcCredential), medicineId]
         );
 
         // 6. Log to supply chain history
@@ -720,10 +794,13 @@ app.post('/api/medicines/create', async (req, res) => {
                 name: medicineName,
                 batchNumber,
                 quantity,
-                expiryDate,
+                expiryDate: formatDateOnly(expiryDate),
                 ipfsHash,
+                ipfsLinks: getIpfsLinks(ipfsHash),
                 blockchainTxHash,
+                blockchainError,
                 blockchainStatus: blockchainStatus || 'MANUFACTURED',
+                vcSigned,
                 targetPharmacyName
             }
         });
@@ -1203,22 +1280,43 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
 
         const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
 
+        const medicineResult = await pool.query(
+            'SELECT * FROM medicines WHERE medicine_id = $1',
+            [medicineId]
+        );
+        const medicine = medicineResult.rows[0];
+        const distributor = distributorResult.rows[0];
+
+        let transportVc = null;
+        try {
+            if (distributor.did) {
+                const issued = await issueTransportCredential(
+                    { delivery_id: deliveryId, deliveryId, quantity },
+                    distributor,
+                    medicine
+                );
+                transportVc = JSON.stringify({ signedJwt: issued.jwt, issuerDid: issued.issuerDid, signed: true });
+                console.log(`✓ Transport VC issued for delivery ${deliveryId}`);
+            }
+        } catch (vcError) {
+            console.error(`✗ Transport VC failed: ${vcError.message}`);
+            transportVc = JSON.stringify({ signed: false, error: vcError.message });
+        }
+
         await pool.query(
             `INSERT INTO deliveries
              (delivery_id, medicine_id, source_wallet, source_role, target_wallet, target_role,
-              target_pharmacy_name, quantity, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+              target_pharmacy_name, quantity, status, transport_vc_credential)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
             [deliveryId, medicineId, distributorWallet, 'distributor', targetPharmacyWallet,
-             'pharmacy', targetPharmacyName, quantity, 'IN_TRANSIT']
+             'pharmacy', targetPharmacyName, quantity, 'IN_TRANSIT', transportVc]
         );
-
-        const distributor = distributorResult.rows[0];
 
         await pool.query(
             `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
              VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [medicineId, deliveryId, 'FORWARDED_TO_PHARMACY', distributorWallet, 'distributor',
-             distributor.did, JSON.stringify({ quantity, targetPharmacyName })]
+             distributor.did, JSON.stringify({ quantity, targetPharmacyName, transportVcIssued: Boolean(transportVc) })]
         );
 
         res.json({
@@ -1229,7 +1327,8 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
                 medicineId,
                 quantity,
                 targetPharmacyName,
-                status: 'IN_TRANSIT'
+                status: 'IN_TRANSIT',
+                transportVcIssued: Boolean(transportVc)
             }
         });
     } catch (error) {
@@ -1263,21 +1362,43 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
         const result = await pool.query(`
             UPDATE deliveries SET status = 'DELIVERED', received_at = CURRENT_TIMESTAMP
             WHERE delivery_id = $1 AND target_wallet = $2 AND status = 'IN_TRANSIT'
-            RETURNING medicine_id, status, quantity
+            RETURNING medicine_id, status, quantity, transport_vc_credential
         `, [deliveryId, pharmacyWallet]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Delivery not found or not authorized' });
         }
 
-        const medicineId = result.rows[0].medicine_id;
+        const { medicine_id: medicineId, quantity, transport_vc_credential: transportVcRaw } = result.rows[0];
 
-        // Get pharmacy info for history logging
+        const medicineResult = await pool.query(
+            'SELECT * FROM medicines WHERE medicine_id = $1',
+            [medicineId]
+        );
+        const medicine = medicineResult.rows[0];
+
+        const medicineJwt = extractJwtFromVcCredential(medicine?.vc_credential);
+        const transportJwt = extractJwtFromVcCredential(transportVcRaw);
+
+        let medicineVcVerification = { verified: false, message: 'VC ni na voljo' };
+        let transportVcVerification = { verified: false, message: 'Transport VC ni na voljo' };
+
+        if (medicineJwt) {
+            medicineVcVerification = await verifyCredentialJwt(medicineJwt, medicine.manufacturer_did);
+        }
+
+        if (transportJwt) {
+            const distributorDid = (await pool.query(
+                'SELECT did FROM users WHERE wallet_address = (SELECT source_wallet FROM deliveries WHERE delivery_id = $1)',
+                [deliveryId]
+            )).rows[0]?.did;
+            transportVcVerification = await verifyCredentialJwt(transportJwt, distributorDid);
+        }
+
         const pharmacyResult = await pool.query(
             'SELECT * FROM users WHERE wallet_address = $1',
             [pharmacyWallet]
         );
-
         const pharmacy = pharmacyResult.rows[0];
 
         // Update medicine blockchain status
@@ -1286,15 +1407,33 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
             WHERE medicine_id = $1
         `, [medicineId]);
 
-        // Log action to supply chain history
         await pool.query(`
             INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [medicineId, deliveryId, 'RECEIVED_AT_PHARMACY', pharmacyWallet, pharmacy.role, pharmacy.did, JSON.stringify({ receivedAt: new Date().toISOString() })]);
+        `, [medicineId, deliveryId, 'RECEIVED_AT_PHARMACY', pharmacyWallet, pharmacy.role, pharmacy.did,
+             JSON.stringify({
+                 receivedAt: new Date().toISOString(),
+                 quantity,
+                 medicineVcVerified: medicineVcVerification.verified,
+                 transportVcVerified: transportVcVerification.verified
+             })]);
+
+        if (medicineVcVerification.verified) {
+            await pool.query(
+                `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, details)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [medicineId, deliveryId, 'VC_VERIFIED_AT_PHARMACY', pharmacyWallet, 'pharmacy',
+                 JSON.stringify({ type: 'MedicineCredential', message: medicineVcVerification.message })]
+            );
+        }
 
         res.json({
             success: true,
-            message: 'Delivery received successfully'
+            message: 'Delivery received successfully',
+            verification: {
+                medicineVc: medicineVcVerification,
+                transportVc: transportVcVerification
+            }
         });
     } catch (error) {
         console.error('Receive delivery error:', error);
@@ -1444,6 +1583,8 @@ app.get('/api/pharmacy/medicine-details/:medicineId', async (req, res) => {
                 blockchainStatus: medicine.blockchain_status,
                 txHash: medicine.blockchain_tx_hash,
                 ipfsHash: medicine.ipfs_hash,
+                ipfsLinks: getIpfsLinks(medicine.ipfs_hash),
+                vcSigned: Boolean(extractJwtFromVcCredential(medicine.vc_credential)),
                 ipfsVerified: Boolean(medicine.ipfs_hash),
                 onChainRegistered: Boolean(medicine.blockchain_tx_hash),
                 supplyChainHistory: displayHistory
@@ -1607,8 +1748,15 @@ app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
             return res.status(404).json({ error: 'Zdravilo ni najdeno' });
         }
 
+        const medicineJwt = extractJwtFromVcCredential(medicine.vc_credential);
+
+        let vcVerification = { verified: false, message: 'VC ni na voljo' };
+        if (medicineJwt) {
+            vcVerification = await verifyCredentialJwt(medicineJwt, medicine.manufacturer_did);
+        }
+
         const blockchainConfigured = Boolean(
-            SEPOLIA_RPC_URL && CONTRACT_ADDRESS && process.env.BLOCKCHAIN_PRIVATE_KEY
+            SEPOLIA_RPC_URL && CONTRACT_ADDRESS && getBlockchainPrivateKey()
         );
 
         let blockchainData = null;
@@ -1617,16 +1765,11 @@ app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
 
         if (blockchainConfigured) {
             try {
-                if (!global.blockchain) {
-                    global.blockchain = initializeBlockchain(
-                        SEPOLIA_RPC_URL,
-                        process.env.BLOCKCHAIN_PRIVATE_KEY,
-                        CONTRACT_ADDRESS
-                    );
+                if (await ensureBlockchain()) {
+                    blockchainData = await getMedicineFromBlockchain(medicineId);
+                    onChainVerified = Boolean(blockchainData?.medicineId || blockchainData?.ipfsHash);
+                    chainStatus = blockchainData?.status || null;
                 }
-                blockchainData = await getMedicineFromBlockchain(medicineId);
-                onChainVerified = Boolean(blockchainData?.medicineId || blockchainData?.ipfsHash);
-                chainStatus = blockchainData?.status || null;
             } catch (error) {
                 console.log(`Blockchain verify note: ${error.message}`);
             }
@@ -1634,31 +1777,35 @@ app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
 
         const ipfsVerified = Boolean(medicine.ipfs_hash);
         const hasTxHash = Boolean(medicine.blockchain_tx_hash);
-        const systemVerified = ipfsVerified && medicine.blockchain_status === 'DELIVERED';
+        const systemVerified = (vcVerification.verified || ipfsVerified) && medicine.blockchain_status === 'DELIVERED';
 
         let message;
         if (onChainVerified) {
-            message = `Zdravilo je verificirano na blockchainu (status: ${chainStatus}).`;
+            message = `Zdravilo je na blockchainu (status: ${chainStatus}).`;
+        } else if (vcVerification.verified) {
+            message = `Walt.id VC preverjen. ${vcVerification.structuralOnly ? '(strukturno)' : '(podpis)'}`;
         } else if (systemVerified && ipfsVerified) {
             message = hasTxHash
-                ? 'Zdravilo je potrjeno v sistemu z IPFS zapisom. Podrobnosti na verigi niso bile prebrane.'
-                : 'Zdravilo je potrjeno v sistemu (IPFS + celotna pot dobave). On-chain TX hash ob ustvarjanju ni bil shranjen.';
+                ? 'Potrjeno v sistemu (IPFS + TX hash).'
+                : 'Potrjeno v sistemu. TX hash manjka — ponovno ustvarite zdravilo ali preverite PRIVATE_KEY_ACCOUNT_1 v Docker.';
         } else if (ipfsVerified) {
-            message = 'Zdravilo ima IPFS zapis, vendar pot dobave še ni zaključena v sistemu.';
+            message = 'IPFS zapis obstaja. VC/blockchain preverjanje ni uspelo.';
         } else if (!blockchainConfigured) {
-            message = 'Blockchain ni konfiguriran na strežniku. Preverjanje je možno le prek podatkov v bazi.';
+            message = 'Blockchain ni konfiguriran (SEPOLIA_RPC_URL, CONTRACT_ADDRESS, PRIVATE_KEY).';
         } else {
-            message = 'Zdravilo ni bilo najdeno na blockchainu in nima popolnega zapisa v sistemu.';
+            message = 'Polno preverjanje ni uspelo.';
         }
 
         res.json({
             success: true,
-            verified: onChainVerified || systemVerified,
+            verified: onChainVerified || vcVerification.verified || systemVerified,
             onChainVerified,
             systemVerified,
+            vcVerification,
             ipfsVerified,
             blockchainConfigured,
             hasTxHash,
+            ipfsLinks: getIpfsLinks(medicine.ipfs_hash),
             dbStatus: medicine.blockchain_status,
             chainStatus,
             status: chainStatus || medicine.blockchain_status,

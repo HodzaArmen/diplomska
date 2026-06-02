@@ -219,6 +219,12 @@ services:
     depends_on:
       app-postgres:
         condition: service_healthy
+      issuer-api:
+        condition: service_started
+      verifier-api:
+        condition: service_started
+    env_file:
+      - ./src/.env
     environment:
       - APP_DB_HOST=app-postgres
       - APP_DB_USERNAME=$APP_DB_USERNAME
@@ -227,8 +233,12 @@ services:
       - APP_POSTGRES_DB_PORT=5432
       - PORT=3000
       - WALT_ID_API_URL=${WALT_ID_API_URL:-http://wallet-api:7001/wallet-api}
+      - WALT_ISSUER_API_URL=${WALT_ISSUER_API_URL:-http://issuer-api:7002}
+      - WALT_VERIFIER_API_URL=${WALT_VERIFIER_API_URL:-http://verifier-api:7003}
       - SEPOLIA_RPC_URL=${SEPOLIA_RPC_URL:-}
       - CONTRACT_ADDRESS=${CONTRACT_ADDRESS:-}
+      - PINATA_API_KEY=${PINATA_API_KEY:-}
+      - PINATA_SECRET_API_KEY=${PINATA_SECRET_API_KEY:-}
     ports:
       - "20000:3000"
     restart: always

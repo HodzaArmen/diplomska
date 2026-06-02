@@ -250,8 +250,18 @@ async function createMedicine() {
         }
 
         const medicine = data.medicine || data;
-        const ipfsHashDisplay = medicine.ipfsHash ? medicine.ipfsHash.substring(0, 20) + '...' : 'Pending';
-        showSuccess('create-success', `✓ Zdravilo ustvarjeno! IPFS: ${ipfsHashDisplay}`);
+        let successMsg = `✓ Zdravilo ustvarjeno!`;
+        if (medicine.vcSigned) successMsg += ' Podpisani VC (Walt.id Issuer).';
+        if (medicine.ipfsHash) {
+            const links = getIpfsGatewayLinks(medicine.ipfsHash);
+            successMsg += ` IPFS: ${links.hash}`;
+        }
+        if (medicine.blockchainTxHash) {
+            successMsg += ` TX: ${medicine.blockchainTxHash.slice(0, 18)}...`;
+        } else if (medicine.blockchainError) {
+            successMsg += ` Blockchain: ${medicine.blockchainError}`;
+        }
+        showSuccess('create-success', successMsg);
 
         document.getElementById('medicine-selection').value = '';
         document.getElementById('custom-medicine-name').value = '';
@@ -354,7 +364,7 @@ async function loadMyMedicines() {
                             <td>${m.batch_number}</td>
                             <td>${m.quantity}</td>
                             <td>${m.available_quantity ?? m.quantity}</td>
-                            <td>${m.expiry_date}</td>
+                            <td>${m.expiry_date ? formatDisplayDate(m.expiry_date) : '—'}</td>
                             <td><span class="badge badge-info">${m.blockchain_status || 'MANUFACTURED'}</span></td>
                         </tr>
                     `).join('')}

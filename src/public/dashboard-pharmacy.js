@@ -170,7 +170,17 @@ async function receiveDelivery(deliveryId) {
             throw new Error(data.error || 'Napaka pri sprejemu dostave');
         }
 
-        alert('✓ Dostava uspešno sprejeta!');
+        const medVc = data.verification?.medicineVc;
+        const trVc = data.verification?.transportVc;
+        let msg = '✓ Dostava sprejeta!\n';
+        msg += medVc?.verified
+            ? `✓ VC zdravila: ${medVc.message}\n`
+            : `⚠ VC zdravila: ${medVc?.message || 'ni preverjeno'}\n`;
+        msg += trVc?.verified
+            ? `✓ VC transport: ${trVc.message}`
+            : `⚠ VC transport: ${trVc?.message || 'ni na voljo'}`;
+        alert(msg);
+
         await loadIncomingDeliveries();
         await loadMyInventory();
     } catch (error) {
@@ -201,13 +211,6 @@ async function viewMedicineDetails(medicineId, deliveryId = null) {
     }
 }
 
-function formatDisplayDate(value) {
-    if (!value) return '—';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
-    return date.toLocaleDateString('sl-SI');
-}
-
 function displayMedicineVisualizer(medicine) {
     const visualizerDiv = document.getElementById('medicine-visualizer');
     visualizerDiv.style.display = 'block';
@@ -216,7 +219,7 @@ function displayMedicineVisualizer(medicine) {
     const historyHtml = history.length === 0
         ? '<p class="text-muted">Ni zgodovine.</p>'
         : `<ul>${history.map(h => `
-            <li><strong>${escapeHtml(h.actionLabel || h.action)}</strong> — ${escapeHtml(h.actorRole || '')} (${new Date(h.timestamp).toLocaleString('sl-SI')})</li>
+            <li><strong>${escapeHtml(h.actionLabel || h.action)}</strong> — ${escapeHtml(h.actorRole || '')} (${formatDisplayDateTime(h.timestamp)})</li>
         `).join('')}</ul>`;
 
     const totalQty = medicine.totalManufacturedQuantity ?? medicine.quantity;
@@ -239,9 +242,10 @@ function displayMedicineVisualizer(medicine) {
             <h4>📦 Pot dobave</h4>
             ${historyHtml}
             <h4>⛓️ Blockchain & IPFS</h4>
-            <p><strong>IPFS:</strong> <code>${escapeHtml(medicine.ipfsHash || 'Ni na voljo')}</code></p>
-            <p><strong>TX hash (ob ustvarjanju):</strong> <code>${escapeHtml(medicine.txHash || 'Ni shranjen — blockchain morda ni bil konfiguriran ob ustvarjanju')}</code></p>
-            <button class="btn btn-verify" data-medicine-id="${escapeHtml(medicine.medicineId)}">🔗 Preveri avtentičnost</button>
+            ${renderIpfsLinksHtml(medicine.ipfsHash)}
+            <p><strong>VC podpis (Walt.id):</strong> ${medicine.vcSigned ? '✓ Da' : '⚠ Ne (stari zapis)'}</p>
+            <p><strong>TX hash:</strong> <code>${escapeHtml(medicine.txHash || 'Ni shranjen')}</code></p>
+            <button class="btn btn-verify" data-medicine-id="${escapeHtml(medicine.medicineId)}">🔗 Preveri avtentičnost (VC + blockchain)</button>
         </div>
     `;
 
@@ -261,8 +265,12 @@ async function verifyOnBlockchain(medicineId) {
         }
 
         const result = await response.json();
-        const icon = result.onChainVerified ? '✅' : (result.verified ? '✅' : '⚠️');
-        alert(`${icon} ${result.message || 'Preverjanje končano.'}`);
+        let msg = result.message || 'Preverjanje končano.';
+        if (result.ipfsLinks) {
+            msg += `\n\nIPFS:\n${result.ipfsLinks.ipfsIo}\n${result.ipfsLinks.pinata}`;
+        }
+        const icon = result.onChainVerified || result.verified ? '✅' : '⚠️';
+        alert(`${icon} ${msg}`);
     } catch (error) {
         alert('Napaka pri preverjanju: ' + error.message);
     }

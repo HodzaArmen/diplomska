@@ -143,7 +143,7 @@ async function loadIncomingDeliveries() {
                             <td>${escapeHtml(d.manufacturer_name)}</td>
                             <td>${escapeHtml(d.batch_number)}</td>
                             <td>${d.quantity}</td>
-                            <td>${escapeHtml(d.expiry_date)}</td>
+                            <td>${formatDisplayDate(d.expiry_date)}</td>
                             <td>
                                 <button class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">
                                     ✓ Sprejmi
@@ -217,7 +217,7 @@ async function loadMyInventory() {
                             <td>${escapeHtml(m.name)}</td>
                             <td>${escapeHtml(m.batch_number)}</td>
                             <td>${m.available_quantity} enot</td>
-                            <td>${escapeHtml(m.expiry_date)}</td>
+                            <td>${formatDisplayDate(m.expiry_date)}</td>
                             <td>
                                 <button class="btn-small btn-forward"
                                     data-medicine-id="${escapeHtml(m.medicine_id)}"
@@ -355,7 +355,7 @@ async function loadOutgoingDeliveries() {
                             <td>${escapeHtml(d.pharmacy_name)}</td>
                             <td>${d.quantity}</td>
                             <td><span class="badge badge-info">${escapeHtml(d.status)}</span></td>
-                            <td>${new Date(d.created_at).toLocaleString('sl-SI')}</td>
+                            <td>${formatDisplayDate(d.created_at)}</td>
                         </tr>
                     `).join('')}
                 </tbody>
