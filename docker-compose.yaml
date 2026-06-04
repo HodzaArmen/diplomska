@@ -177,8 +177,9 @@ services:
     healthcheck:
       test: [ "CMD", "pg_isready", "-q", "-U", "$APP_DB_USERNAME", "-d", "$APP_DB_NAME" ]
       interval: 5s
-      timeout: 1s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     restart: always
     environment:
       POSTGRES_DB: $APP_DB_NAME
@@ -190,26 +191,18 @@ services:
     ports:
       - "$APP_POSTGRES_DB_PORT:5432"
 
-  pg-admin:
-    image: dpage/pgadmin4
-    container_name: pg-admin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: $APP_PG_ADMIN_EMAIL
-      PGADMIN_DEFAULT_PASSWORD: $APP_PG_ADMIN_PASSWORD
-      PGADMIN_CONFIG_SERVER_MODE: 'False'
-      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: 'False'
-      PGADMIN_CONFIG_CONSOLE_LOG_LEVEL: 10
-      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
-    volumes:
-      - pgadmin-data:/var/lib/pgadmin
-      - ./servers.json:/pgadmin4/servers.json:ro
-      - ./pgpass:/pgpass:ro
-    ports:
-      - $APP_PG_ADMIN_PORT:80
+  # Adminer — preprost DB UI (podobno phpMyAdmin), za PostgreSQL app bazo
+  adminer:
+    image: adminer:latest
+    container_name: adminer
+    restart: unless-stopped
     depends_on:
       app-postgres:
         condition: service_healthy
-    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: app-postgres
+    ports:
+      - "${APP_DB_ADMIN_PORT}:8080"
 
   app:
     build:
@@ -226,6 +219,7 @@ services:
     env_file:
       - ./src/.env
     environment:
+      - APP_DB_ENGINE=postgres
       - APP_DB_HOST=app-postgres
       - APP_DB_USERNAME=$APP_DB_USERNAME
       - APP_DB_PASSWORD=$APP_DB_PASSWORD
@@ -233,21 +227,22 @@ services:
       - APP_POSTGRES_DB_PORT=5432
       - PORT=3000
       - WALT_ID_API_URL=${WALT_ID_API_URL:-http://wallet-api:7001/wallet-api}
-      - WALT_ISSUER_API_URL=${WALT_ISSUER_API_URL:-http://issuer-api:7002}
-      - WALT_VERIFIER_API_URL=${WALT_VERIFIER_API_URL:-http://verifier-api:7003}
-      - SEPOLIA_RPC_URL=${SEPOLIA_RPC_URL:-}
+      - WALT_ID_API_URL=http://wallet-api:7001/wallet-api
+      - WALT_ISSUER_API_URL=http://issuer-api:7002
+      - WALT_VERIFIER_API_URL=http://verifier-api:7003
       - CONTRACT_ADDRESS=${CONTRACT_ADDRESS:-}
       - PINATA_API_KEY=${PINATA_API_KEY:-}
       - PINATA_SECRET_API_KEY=${PINATA_SECRET_API_KEY:-}
     ports:
       - "20000:3000"
     restart: always
+    command: sh -c "npm install && npm start"
     healthcheck:
       test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000" ]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 5s
+      retries: 5
+      start_period: 90s
     volumes:
       - ./src:/app
       - /app/node_modules
@@ -355,6 +350,5 @@ services:
 volumes:
   wallet-api-db:
   app-postgres-db:
-  pgadmin-data:
   vault_data:
   valkey_data:
