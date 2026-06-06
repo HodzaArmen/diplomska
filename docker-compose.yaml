@@ -33,6 +33,8 @@ services:
       - .env
     volumes:
       - ./issuer-api/config:/waltid-issuer-api/config
+    environment:
+      - SERVICE_HOST=issuer-api # za rewrite URL-jev v credential_offer_uri (localhost:7002 -> issuer-api:7002)
 
   verifier-api:
     image: ${IMAGE_PREFIX}waltid/verifier-api:${VERSION_TAG:-latest}
@@ -48,92 +50,93 @@ services:
     volumes:
       - ./verifier-api/config:/waltid-verifier-api/config
     environment:
-      OPA_SERVER_URL: "http://opa-server:8181"
+      - OPA_SERVER_URL="http://opa-server:8181"
+      - SERVICE_HOST=verifier-api
 
-  verifier-api2:
-    image: ${IMAGE_PREFIX}waltid/verifier-api2:${VERSION_TAG:-latest}
-    profiles:
-      - services
-      - identity
-      - all
-    pull_policy: missing
-    depends_on:
-      - caddy
-    env_file:
-      - .env
-    volumes:
-      - ./verifier-api2/config:/waltid-verifier-api2/config
+  # verifier-api2:
+  #   image: ${IMAGE_PREFIX}waltid/verifier-api2:${VERSION_TAG:-latest}
+  #   profiles:
+  #     - services
+  #     - identity
+  #     - all
+  #   pull_policy: missing
+  #   depends_on:
+  #     - caddy
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./verifier-api2/config:/waltid-verifier-api2/config
 
 
-  waltid-demo-wallet:
-    image: ${IMAGE_PREFIX}waltid/waltid-demo-wallet:${VERSION_TAG:-latest}
-    profiles:
-      - apps
-      - identity
-      - all
-    pull_policy: missing
-    build:
-      context: ../
-      dockerfile: waltid-applications/waltid-web-wallet/apps/waltid-demo-wallet/Dockerfile
-    depends_on:
-      - wallet-api
-      - caddy
-    environment:
-      NUXT_PUBLIC_ISSUER_CALLBACK_URL: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
-      NUXT_PUBLIC_DEV_WALLET_URL: "http://$SERVICE_HOST:$DEV_WALLET_FRONTEND_PORT"
-      PORT: $DEMO_WALLET_FRONTEND_PORT
+  # waltid-demo-wallet:
+  #   image: ${IMAGE_PREFIX}waltid/waltid-demo-wallet:${VERSION_TAG:-latest}
+  #   profiles:
+  #     - apps
+  #     - identity
+  #     - all
+  #   pull_policy: missing
+  #   build:
+  #     context: ../
+  #     dockerfile: waltid-applications/waltid-web-wallet/apps/waltid-demo-wallet/Dockerfile
+  #   depends_on:
+  #     - wallet-api
+  #     - caddy
+  #   environment:
+  #     NUXT_PUBLIC_ISSUER_CALLBACK_URL: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
+  #     NUXT_PUBLIC_DEV_WALLET_URL: "http://$SERVICE_HOST:$DEV_WALLET_FRONTEND_PORT"
+  #     PORT: $DEMO_WALLET_FRONTEND_PORT
 
-  waltid-dev-wallet:
-    image: ${IMAGE_PREFIX}waltid/waltid-dev-wallet:${VERSION_TAG:-latest}
-    profiles:
-      - apps
-      - identity
-      - all
-    pull_policy: missing
-    build:
-      context: ../
-      dockerfile: waltid-applications/waltid-web-wallet/apps/waltid-dev-wallet/Dockerfile
-    depends_on:
-      - wallet-api
-      - caddy
-    environment:
-      NUXT_PUBLIC_ISSUER_CALLBACK_URL: "http://$SERVICE_HOST:$DEV_WALLET_FRONTEND_PORT"
-      NUXT_PUBLIC_DEMO_WALLET_URL: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
-      PORT: $DEV_WALLET_FRONTEND_PORT
+  # waltid-dev-wallet:
+  #   image: ${IMAGE_PREFIX}waltid/waltid-dev-wallet:${VERSION_TAG:-latest}
+  #   profiles:
+  #     - apps
+  #     - identity
+  #     - all
+  #   pull_policy: missing
+  #   build:
+  #     context: ../
+  #     dockerfile: waltid-applications/waltid-web-wallet/apps/waltid-dev-wallet/Dockerfile
+  #   depends_on:
+  #     - wallet-api
+  #     - caddy
+  #   environment:
+  #     NUXT_PUBLIC_ISSUER_CALLBACK_URL: "http://$SERVICE_HOST:$DEV_WALLET_FRONTEND_PORT"
+  #     NUXT_PUBLIC_DEMO_WALLET_URL: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
+  #     PORT: $DEV_WALLET_FRONTEND_PORT
 
-  web-portal:
-    image: ${IMAGE_PREFIX}waltid/portal:${VERSION_TAG:-latest}
-    profiles:
-      - apps
-      - identity
-      - all
-    pull_policy: missing
-    build:
-      context: ../
-      dockerfile: waltid-applications/waltid-web-portal/Dockerfile
-    depends_on:
-      - caddy
-    environment:
-      NEXT_PUBLIC_VC_REPO: "http://$SERVICE_HOST:$VC_REPO_PORT"
-      NEXT_PUBLIC_ISSUER: "http://$SERVICE_HOST:$ISSUER_API_PORT"
-      NEXT_PUBLIC_VERIFIER: "http://$SERVICE_HOST:$VERIFIER_API_PORT"
-      NEXT_PUBLIC_WALLET: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
-      PORT: $WEB_PORTAL_PORT
+  # web-portal:
+  #   image: ${IMAGE_PREFIX}waltid/portal:${VERSION_TAG:-latest}
+  #   profiles:
+  #     - apps
+  #     - identity
+  #     - all
+  #   pull_policy: missing
+  #   build:
+  #     context: ../
+  #     dockerfile: waltid-applications/waltid-web-portal/Dockerfile
+  #   depends_on:
+  #     - caddy
+  #   environment:
+  #     NEXT_PUBLIC_VC_REPO: "http://$SERVICE_HOST:$VC_REPO_PORT"
+  #     NEXT_PUBLIC_ISSUER: "http://$SERVICE_HOST:$ISSUER_API_PORT"
+  #     NEXT_PUBLIC_VERIFIER: "http://$SERVICE_HOST:$VERIFIER_API_PORT"
+  #     NEXT_PUBLIC_WALLET: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
+  #     PORT: $WEB_PORTAL_PORT
 
-  vc-repo:
-    platform: linux/amd64
-    image: ${IMAGE_PREFIX}waltid/vc-repository:${VERSION_VC_REPO:-latest}
-    profiles:
-      - services
-      - identity
-      - all
-    pull_policy: missing
-    build:
-      context: ../waltid-applications/waltid-credentials/.
-    depends_on:
-      - caddy
-    environment:
-      PORT: $VC_REPO_PORT
+  # vc-repo:
+  #   platform: linux/amd64
+  #   image: ${IMAGE_PREFIX}waltid/vc-repository:${VERSION_VC_REPO:-latest}
+  #   profiles:
+  #     - services
+  #     - identity
+  #     - all
+  #   pull_policy: missing
+  #   build:
+  #     context: ../waltid-applications/waltid-credentials/.
+  #   depends_on:
+  #     - caddy
+  #   environment:
+  #     PORT: $VC_REPO_PORT
 
   valkey:
     image: valkey/valkey:${VERSION_VALKEY:-7.2}
@@ -322,28 +325,26 @@ services:
         protocol: tcp
         mode: host
 
-      - target: "$VERIFIER_API2_PORT"
-        published: $VERIFIER_API2_PORT # verifier-api2
-        protocol: tcp
-        mode: host
+      # - target: "$VERIFIER_API2_PORT"
+      #   published: $VERIFIER_API2_PORT # verifier-api2 (izklopljeno)
+      #   protocol: tcp
+      #   mode: host
 
-      - target: "$DEMO_WALLET_FRONTEND_PORT"
-        published: $DEMO_WALLET_FRONTEND_PORT # waltid-demo-wallet
-        protocol: tcp
-        mode: host
+      # - target: "$DEMO_WALLET_FRONTEND_PORT"
+      #   published: $DEMO_WALLET_FRONTEND_PORT # waltid-demo-wallet
+      #   protocol: tcp
+      #   mode: host
 
-      - target: "$DEV_WALLET_FRONTEND_PORT"
-        published: $DEV_WALLET_FRONTEND_PORT # waltid-dev-wallet
-        protocol: tcp
-        mode: host
+      # - target: "$DEV_WALLET_FRONTEND_PORT"
+      #   published: $DEV_WALLET_FRONTEND_PORT # waltid-dev-wallet
+      #   protocol: tcp
+      #   mode: host
 
-      - target: "$WEB_PORTAL_PORT"
-        published: $WEB_PORTAL_PORT # web-portal
-        protocol: tcp
-        mode: host
+      # - target: "$WEB_PORTAL_PORT"
+      #   published: $WEB_PORTAL_PORT # web-portal
+      #   protocol: tcp
+      #   mode: host
 
-
-      # pg-admin teče neposredno na APP_PG_ADMIN_PORT (20050), ne prek Caddy
 
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
