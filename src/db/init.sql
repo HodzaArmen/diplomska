@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
     walt_id_registered_at TIMESTAMP,
     did VARCHAR(255),
     wallet_id VARCHAR(255),
+    walt_email VARCHAR(255),
+    walt_api_cookie TEXT,
     session_id VARCHAR(255) UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
