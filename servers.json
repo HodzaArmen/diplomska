@@ -6,7 +6,7 @@
       "Host": "app-postgres",
       "Port": 5432,
       "MaintenanceDB": "diplomska_app",
-      "Username": "app_user",
+      "Username": "admin",
       "PassFile": "/pgpass",
       "SSLMode": "prefer"
     },
