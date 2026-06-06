@@ -573,7 +573,11 @@ function structuralVerify(jwt, expectedIssuerDid) {
     const issuer = vc?.issuer?.id || payload.iss;
     const subject = vc?.credentialSubject || payload.credentialSubject;
 
-    const issuerOk = !expectedIssuerDid || issuer === expectedIssuerDid;
+    const issuerOk = !expectedIssuerDid || 
+                     issuer === expectedIssuerDid || 
+                     subject?.id === expectedIssuerDid ||
+                     subject?.manufacturerDID === expectedIssuerDid ||
+                     subject?.distributorDID === expectedIssuerDid;
 
     return {
         verified: Boolean(subject && issuerOk),
