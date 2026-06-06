@@ -21,12 +21,86 @@ export const PINATA_API_URL = 'https://api.pinata.cloud/pinning/pinJSONToIPFS';
  * @param {string} productData.manufacturer - Manufacturer name
  * @returns {Promise<string>} - Returns IPFS CID hash
  */
+function isPinataConfigured() {
+    return Boolean(process.env.PINATA_API_KEY && process.env.PINATA_SECRET_API_KEY);
+}
+
+function normalizeIpfsHash(ipfsHash) {
+    if (!ipfsHash) return null;
+    return String(ipfsHash).replace(/^ipfs:\/\//, '').trim();
+}
+
+function getIpfsGatewayUrls(ipfsHash) {
+    const hash = normalizeIpfsHash(ipfsHash);
+    if (!hash) return null;
+    return {
+        hash,
+        ipfsIo: `https://ipfs.io/ipfs/${hash}`,
+        pinata: `https://gateway.pinata.cloud/ipfs/${hash}`
+    };
+}
+
+/**
+ * Fetch JSON document from public IPFS gateways (for verification / preview)
+ */
+async function fetchIpfsJson(ipfsHash, { timeoutMs = 15000 } = {}) {
+    const hash = normalizeIpfsHash(ipfsHash);
+    if (!hash) {
+        throw new Error('Manjka IPFS hash');
+    }
+
+    const gateways = [
+        `https://gateway.pinata.cloud/ipfs/${hash}`,
+        `https://ipfs.io/ipfs/${hash}`
+    ];
+
+    let lastError = null;
+    for (const url of gateways) {
+        try {
+            const response = await axios.get(url, {
+                timeout: timeoutMs,
+                headers: { Accept: 'application/json' }
+            });
+            return {
+                data: response.data,
+                gateway: url,
+                hash
+            };
+        } catch (error) {
+            lastError = error;
+            console.warn(`[IPFS] Gateway ${url} failed: ${error.message}`);
+        }
+    }
+
+    throw new Error(`IPFS vsebine ni mogoče prebrati (${lastError?.message || 'neznana napaka'})`);
+}
+
+async function verifyIpfsAccessible(ipfsHash) {
+    try {
+        const result = await fetchIpfsJson(ipfsHash);
+        return {
+            accessible: true,
+            hash: result.hash,
+            gateway: result.gateway,
+            medicineId: result.data?.medicineId || null
+        };
+    } catch (error) {
+        return {
+            accessible: false,
+            hash: normalizeIpfsHash(ipfsHash),
+            error: error.message
+        };
+    }
+}
+
 async function uploadProductData(productData) {
     const apiKey = process.env.PINATA_API_KEY;
     const secretKey = process.env.PINATA_SECRET_API_KEY;
 
     if (!apiKey || !secretKey) {
-        throw new Error('Missing PINATA_API_KEY or PINATA_SECRET_API_KEY in environment variables');
+        throw new Error(
+            'Manjkata PINATA_API_KEY in PINATA_SECRET_API_KEY (preveri src/.env in da docker-compose ne prepisuje s praznimi vrednostmi)'
+        );
     }
 
     try {
@@ -122,5 +196,10 @@ function generateSampleProductData(index = 1) {
 export {
     uploadProductData,
     createProductData,
-    generateSampleProductData
+    generateSampleProductData,
+    isPinataConfigured,
+    normalizeIpfsHash,
+    getIpfsGatewayUrls,
+    fetchIpfsJson,
+    verifyIpfsAccessible
 };
