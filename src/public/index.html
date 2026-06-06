@@ -48,15 +48,26 @@
                 <div id="wallet-preview" class="wallet-preview"></div>
 
                 <div id="phase-2-login" class="registration-phase" style="display:none;">
-                    <h3>Prijava</h3>
-                    <p class="phase-description">Ta denarnica je že registrirana. Kliknite za vstop na nadzorno ploščo.</p>
+                    <h3>Korak 2: Prijava</h3>
+                    <p class="phase-description">Denarnica je registrirana. Vpišite Walt.id email in geslo.</p>
+
+                    <div class="form-group">
+                        <label for="walt-login-email">Walt.id Email: <span class="required">*</span></label>
+                        <input type="email" id="walt-login-email" class="form-control" placeholder="npr. admin@krka.si">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="walt-login-password">Geslo (Walt.id): <span class="required">*</span></label>
+                        <input type="password" id="walt-login-password" class="form-control" placeholder="Vaše geslo">
+                    </div>
+
                     <button id="btn-login" class="btn btn-primary btn-large">✓ Prijava</button>
                     <p id="login-error" class="error-message" style="display:none;"></p>
                 </div>
 
                 <div id="phase-2-register" class="registration-phase" style="display:none;">
-                    <h3>Registracija</h3>
-                    <p class="phase-description">Izpolnite podatke za nov račun.</p>
+                    <h3>Korak 2: Registracija</h3>
+                    <p class="phase-description">Izpolnite podatke podjetja in ustvarite Walt.id račun (email + geslo).</p>
 
                     <div class="form-group">
                         <label for="role-select">Vloga: <span class="required">*</span></label>
@@ -74,8 +85,13 @@
                     </div>
 
                     <div class="form-group">
-                        <label for="company-email">Email: <span class="required">*</span></label>
+                        <label for="company-email">Kontaktni email podjetja: <span class="required">*</span></label>
                         <input type="email" id="company-email" class="form-control" placeholder="npr. info@farmacija.si">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="walt-register-email">Walt.id Email (prijava): <span class="required">*</span></label>
+                        <input type="email" id="walt-register-email" class="form-control" placeholder="npr. admin@krka.si">
                     </div>
 
                     <div class="form-group">

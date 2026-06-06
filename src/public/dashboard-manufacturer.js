@@ -250,18 +250,35 @@ async function createMedicine() {
         }
 
         const medicine = data.medicine || data;
-        let successMsg = `✓ Zdravilo ustvarjeno!`;
-        if (medicine.vcSigned) successMsg += ' Podpisani VC (Walt.id Issuer).';
+        const warnings = data.warnings || [];
+
+        if (!medicine.ipfsHash) {
+            const detail = medicine.ipfsError || warnings.join(' · ') || 'IPFS upload ni uspel';
+            showError('create-error', `Zdravilo je v bazi, vendar brez IPFS: ${detail}. Preveri GET /api/system/status in src/.env (Pinata), nato docker compose restart app.`);
+        }
+
+        let successMsg = data.fullyIntegrated
+            ? '✓ Zdravilo ustvarjeno (Walt.id VC + IPFS + blockchain)!'
+            : '⚠ Zdravilo shranjeno — nekateri koraki niso uspeli:';
+
+        if (medicine.vcSigned) successMsg += '<br>• Podpisani VC (issuer-api)';
         if (medicine.ipfsHash) {
             const links = getIpfsGatewayLinks(medicine.ipfsHash);
-            successMsg += ` IPFS: ${links.hash}`;
+            successMsg += `<br>• IPFS: <a href="${links.ipfsIo}" target="_blank" rel="noopener">ipfs.io</a> | <a href="${links.pinata}" target="_blank" rel="noopener">Pinata</a> (${links.hash})`;
         }
         if (medicine.blockchainTxHash) {
-            successMsg += ` TX: ${medicine.blockchainTxHash.slice(0, 18)}...`;
-        } else if (medicine.blockchainError) {
-            successMsg += ` Blockchain: ${medicine.blockchainError}`;
+            const ex = medicine.blockchainExplorer?.tx;
+            successMsg += ex
+                ? `<br>• TX: <a href="${ex}" target="_blank" rel="noopener">Etherscan</a> <code>${medicine.blockchainTxHash.slice(0, 20)}…</code>`
+                : `<br>• TX: <code>${medicine.blockchainTxHash}</code>`;
         }
-        showSuccess('create-success', successMsg);
+        if (warnings.length && !data.fullyIntegrated) {
+            successMsg += `<br><small>${warnings.join('<br>')}</small>`;
+        }
+
+        if (medicine.ipfsHash) {
+            showSuccess('create-success', successMsg, true);
+        }
 
         document.getElementById('medicine-selection').value = '';
         document.getElementById('custom-medicine-name').value = '';
@@ -353,6 +370,8 @@ async function loadMyMedicines() {
                         <th>Količina</th>
                         <th>Na voljo</th>
                         <th>Rok</th>
+                        <th>IPFS</th>
+                        <th>TX</th>
                         <th>Status</th>
                     </tr>
                 </thead>
@@ -365,6 +384,8 @@ async function loadMyMedicines() {
                             <td>${m.quantity}</td>
                             <td>${m.available_quantity ?? m.quantity}</td>
                             <td>${m.expiry_date ? formatDisplayDate(m.expiry_date) : '—'}</td>
+                            <td>${m.ipfs_hash ? `<a href="${getIpfsGatewayLinks(m.ipfs_hash).pinata}" target="_blank" rel="noopener" title="${m.ipfs_hash}">✓</a>` : '—'}</td>
+                            <td>${m.blockchain_tx_hash ? `<code title="${m.blockchain_tx_hash}">${m.blockchain_tx_hash.slice(0, 10)}…</code>` : '—'}</td>
                             <td><span class="badge badge-info">${m.blockchain_status || 'MANUFACTURED'}</span></td>
                         </tr>
                     `).join('')}
@@ -393,8 +414,12 @@ function showError(elementId, message) {
     element.style.display = 'block';
 }
 
-function showSuccess(elementId, message) {
+function showSuccess(elementId, message, asHtml = false) {
     const element = document.getElementById(elementId);
-    element.textContent = message;
+    if (asHtml) {
+        element.innerHTML = message;
+    } else {
+        element.textContent = message;
+    }
     element.style.display = 'block';
 }

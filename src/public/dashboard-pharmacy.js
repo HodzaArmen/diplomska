@@ -172,13 +172,24 @@ async function receiveDelivery(deliveryId) {
 
         const medVc = data.verification?.medicineVc;
         const trVc = data.verification?.transportVc;
-        let msg = '✓ Dostava sprejeta!\n';
+        const ipfs = data.verification?.ipfs;
+        const ipfsLinks = data.verification?.ipfsLinks;
+        let msg = data.message || '✓ Dostava sprejeta!\n';
+        msg += '\n';
         msg += medVc?.verified
-            ? `✓ VC zdravila: ${medVc.message}\n`
+            ? `✓ VC zdravila (issuer): ${medVc.message}\n`
             : `⚠ VC zdravila: ${medVc?.message || 'ni preverjeno'}\n`;
         msg += trVc?.verified
-            ? `✓ VC transport: ${trVc.message}`
-            : `⚠ VC transport: ${trVc?.message || 'ni na voljo'}`;
+            ? `✓ VC distributorja (verifier-api): ${trVc.message}\n`
+            : `⚠ VC distributorja: ${trVc?.message || 'ni na voljo'}\n`;
+        msg += ipfs?.accessible
+            ? `✓ IPFS vsebina dostopna (${ipfs.gateway || 'gateway'})\n`
+            : `⚠ IPFS: ${ipfs?.error || ipfs?.message || 'ni preverjeno'}\n`;
+        if (ipfsLinks) {
+            msg += `\nIPFS:\n${ipfsLinks.ipfsIo}\n${ipfsLinks.pinata}`;
+        }
+
+        console.log(msg);
         alert(msg);
 
         await loadIncomingDeliveries();
@@ -243,8 +254,8 @@ function displayMedicineVisualizer(medicine) {
             ${historyHtml}
             <h4>⛓️ Blockchain & IPFS</h4>
             ${renderIpfsLinksHtml(medicine.ipfsHash)}
+            ${renderBlockchainExplorerHtml(medicine)}
             <p><strong>VC podpis (Walt.id):</strong> ${medicine.vcSigned ? '✓ Da' : '⚠ Ne (stari zapis)'}</p>
-            <p><strong>TX hash:</strong> <code>${escapeHtml(medicine.txHash || 'Ni shranjen')}</code></p>
             <button class="btn btn-verify" data-medicine-id="${escapeHtml(medicine.medicineId)}">🔗 Preveri avtentičnost (VC + blockchain)</button>
         </div>
     `;
@@ -268,6 +279,9 @@ async function verifyOnBlockchain(medicineId) {
         let msg = result.message || 'Preverjanje končano.';
         if (result.ipfsLinks) {
             msg += `\n\nIPFS:\n${result.ipfsLinks.ipfsIo}\n${result.ipfsLinks.pinata}`;
+        }
+        if (result.blockchainExplorer?.tx) {
+            msg += `\n\nBlockchain (Etherscan):\n${result.blockchainExplorer.tx}`;
         }
         const icon = result.onChainVerified || result.verified ? '✅' : '⚠️';
         alert(`${icon} ${msg}`);
