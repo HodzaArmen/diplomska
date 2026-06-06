@@ -7,7 +7,7 @@
 const axios = require('axios');
 
 // Default walt.id Wallet API endpoint
-const WALT_API_BASE = process.env.WALT_ID_API_URL || 'http://localhost:7001/wallet-api';
+const WALT_API_BASE = process.env.WALT_ID_API_URL;
 
 // In-memory session cookie
 let sessionCookie = null;
