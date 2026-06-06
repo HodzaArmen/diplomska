@@ -5,33 +5,198 @@
 
 import axios from 'axios';
 import crypto from 'crypto';
+import { SignJWT, importJWK } from 'jose';
 
-const ISSUER_API = process.env.WALT_ISSUER_API_URL || 'http://issuer-api:7002';
-const VERIFIER_API = process.env.WALT_VERIFIER_API_URL || 'http://verifier-api:7003';
+const ISSUER_API = (process.env.WALT_ISSUER_API_URL || 'http://issuer-api:7002').replace(/\/$/, '');
+const VERIFIER_API = (process.env.WALT_VERIFIER_API_URL || 'http://verifier-api:7003').replace(/\/$/, '');
+const WALLET_API = (process.env.WALT_ID_API_URL || 'http://wallet-api:7001/wallet-api').replace(/\/$/, '');
 
 let cachedIssuerKey = null;
 
-function parseCredentialOffer(offerResponse) {
+function rewriteLocalServiceUrl(vhodniNiz) {
+    if (!vhodniNiz) return vhodniNiz;
+
+    // Dekodiramo vse skrite %3A in %2F v navadna dvopičja in poševnice
+    let dekodiranNiz = decodeURIComponent(String(vhodniNiz));
+
+    // Zamenjamo localhost z docker imenom
+    let popravljenNiz = dekodiranNiz.replace(/localhost:7002/g, 'issuer-api:7002');
+
+    return popravljenNiz; // Vrnem čitljiv, popravljen URL
+}
+
+/**
+ * Issuer API vrne openid-credential-offer://...
+ * - credential_offer= (inline JSON, starejši format)
+ * - credential_offer_uri= (URL do JSON, Walt.id DRAFT13+)
+ */
+async function resolveCredentialOffer(offerResponse) {
     if (!offerResponse) {
         throw new Error('Issuer ni vrnil credential offer');
     }
 
-    if (typeof offerResponse === 'object' && offerResponse.credential_issuer) {
-        return offerResponse;
-    }
-
-    let offerStr = String(offerResponse).trim();
-
-    if (offerStr.startsWith('openid-credential-offer://')) {
-        const query = offerStr.includes('?') ? offerStr.split('?').slice(1).join('?') : '';
-        const params = new URLSearchParams(query);
-        const encoded = params.get('credential_offer');
-        if (encoded) {
-            offerStr = decodeURIComponent(encoded);
+    if (typeof offerResponse === 'object') {
+        if (offerResponse.credential_issuer) {
+            return {
+                ...offerResponse,
+                credential_issuer: rewriteLocalServiceUrl(offerResponse.credential_issuer),
+                credential_offer_uri: rewriteLocalServiceUrl(offerResponse.credential_offer_uri)
+            };
+        }
+        if (offerResponse.credential_offer) {
+            return resolveCredentialOffer(offerResponse.credential_offer);
+        }
+        if (typeof offerResponse.offer === 'string') {
+            return resolveCredentialOffer(offerResponse.offer);
         }
     }
 
-    return JSON.parse(offerStr);
+    let offerStr = String(offerResponse).trim();
+    if (offerStr.endsWith('%')) {
+        offerStr = offerStr.slice(0, -1);
+    }
+    offerStr = rewriteLocalServiceUrl(offerStr);
+
+    if (offerStr.startsWith('{')) {
+        const parsed = JSON.parse(offerStr);
+        if (parsed?.credential_issuer) {
+            parsed.credential_issuer = rewriteLocalServiceUrl(parsed.credential_issuer);
+        }
+        if (parsed?.credential_offer_uri) {
+            parsed.credential_offer_uri = rewriteLocalServiceUrl(parsed.credential_offer_uri);
+        }
+        return parsed;
+    }
+
+    if (offerStr.startsWith('openid-credential-offer://')) {
+        const inlineMatch = offerStr.match(/[?&]credential_offer=([^&]+)/);
+        if (inlineMatch?.[1]) {
+            const parsed = JSON.parse(decodeURIComponent(inlineMatch[1]));
+            if (parsed?.credential_issuer) {
+                parsed.credential_issuer = rewriteLocalServiceUrl(parsed.credential_issuer);
+            }
+            return parsed;
+        }
+
+        const uriMatch = offerStr.match(/[?&]credential_offer_uri=([^&]+)/);
+        if (uriMatch?.[1]) {
+            const offerUri = rewriteLocalServiceUrl(decodeURIComponent(uriMatch[1]));
+            try {
+                const response = await axios.get(offerUri, {
+                    timeout: 30000,
+                    headers: { Accept: 'application/json' },
+                    validateStatus: () => true
+                });
+
+                if (response.status >= 400) {
+                    throw new Error(`credential_offer_uri ${response.status}: ${offerUri}`);
+                }
+
+                if (typeof response.data === 'object' && response.data?.credential_issuer) {
+                    return {
+                        ...response.data,
+                        credential_issuer: rewriteLocalServiceUrl(response.data.credential_issuer),
+                        credential_offer_uri: rewriteLocalServiceUrl(response.data.credential_offer_uri)
+                    };
+                }
+
+                if (typeof response.data === 'string') {
+                    return resolveCredentialOffer(response.data);
+                }
+            } catch (error) {
+                throw new Error(`Branje credential_offer_uri ni uspelo (${offerUri}): ${error.message}`);
+            }
+
+            throw new Error('credential_offer_uri ni vrnil JSON offerja');
+        }
+
+        try {
+            const httpLike = offerStr.replace(/^openid-credential-offer:\/\//, 'http://');
+            const url = new URL(httpLike);
+            const encoded = url.searchParams.get('credential_offer');
+            if (encoded) {
+                const parsed = JSON.parse(decodeURIComponent(encoded));
+                if (parsed?.credential_issuer) {
+                    parsed.credential_issuer = rewriteLocalServiceUrl(parsed.credential_issuer);
+                }
+                return parsed;
+            }
+        } catch {
+            // fall through
+        }
+    }
+
+    throw new Error(
+        `Credential offer ni v pričakovanem formatu (prvih 80 znakov: ${offerStr.slice(0, 80)})`
+    );
+}
+
+function resolveIssuerBaseUrl(credentialIssuer) {
+    if (!credentialIssuer) return ISSUER_API;
+    return rewriteLocalServiceUrl(String(credentialIssuer)).replace(/\/$/, '');
+}
+
+async function importKeyFromIssuerMaterial(issuerKey) {
+    const jwk = issuerKey?.jwk || issuerKey;
+    const alg = jwk.alg || (jwk.kty === 'OKP' ? 'EdDSA' : jwk.crv === 'P-256' ? 'ES256' : 'EdDSA');
+    return { key: await importJWK(jwk, alg), alg };
+}
+
+/**
+ * POPRAVLJENO: V glavo JWT dodamo javni JWK in kid, da Walt.id lahko uspešno razreši ključ.
+ */
+async function createProofJwt({ issuerKey, issuerDid, audience, cNonce }) {
+    const { key, alg } = await importKeyFromIssuerMaterial(issuerKey);
+    const jwk = issuerKey?.jwk || issuerKey;
+
+    // Pripravimo javni del JWK (odstranimo privatni ključ 'd', če obstaja), ki ga priložimo v glavo
+    const publicJwk = { ...jwk };
+    delete publicJwk.d;
+
+    const header = {
+        alg,
+        typ: 'openid4vci-proof+jwt',
+        jwk: publicJwk
+    };
+
+    if (jwk.kid) {
+        header.kid = jwk.kid;
+    } else if (issuerDid) {
+        header.kid = issuerDid;
+    }
+
+    return new SignJWT({ nonce: cNonce })
+        .setProtectedHeader(header)
+        .setIssuedAt()
+        .setAudience(audience)
+        .setIssuer(issuerDid)
+        .sign(key);
+}
+
+async function fetchCredentialNonce(issuerBase, accessToken) {
+    const paths = ['/nonce', '/draft13/nonce'];
+    for (const path of paths) {
+        try {
+            const response = await axios.post(
+                `${issuerBase}${path}`,
+                {},
+                {
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 15000,
+                    validateStatus: () => true
+                }
+            );
+            if (response.status >= 200 && response.status < 300) {
+                return response.data?.c_nonce || response.data?.nonce || null;
+            }
+        } catch {
+            // poskusi naslednjo pot
+        }
+    }
+    return null;
 }
 
 async function getIssuerSigningMaterial() {
@@ -67,8 +232,8 @@ async function getIssuerSigningMaterial() {
     return cachedIssuerKey;
 }
 
-async function claimCredentialFromOffer(offer, credentialConfigurationId) {
-    const issuerBase = offer.credential_issuer.replace(/\/$/, '');
+async function claimCredentialFromOffer(offer, credentialConfigurationId, { issuerKey, issuerDid }) {
+    const issuerBase = resolveIssuerBaseUrl(offer.credential_issuer);
     const grant = offer.grants?.['urn:ietf:params:oauth:grant-type:pre-authorized_code'];
 
     if (!grant?.['pre-authorized_code']) {
@@ -83,47 +248,178 @@ async function claimCredentialFromOffer(offer, credentialConfigurationId) {
         }).toString(),
         {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 30000
+            timeout: 30000,
+            validateStatus: () => true
         }
     );
+
+    if (tokenResponse.status >= 400) {
+        throw new Error(`Issuer token ${tokenResponse.status}: ${JSON.stringify(tokenResponse.data)?.slice(0, 200)}`);
+    }
 
     const accessToken = tokenResponse.data.access_token;
     if (!accessToken) {
         throw new Error('Issuer token endpoint ni vrnil access_token');
     }
 
+    const cNonce = tokenResponse.data.c_nonce || await fetchCredentialNonce(issuerBase, accessToken);
+    if (!cNonce) {
+        throw new Error('Manjka c_nonce za proof of possession (OID4VCI DRAFT13)');
+    }
+
+    console.log('[OID4VCI proof] issuerDid:', issuerDid);
+    console.log('[OID4VCI proof] issuerBase:', issuerBase);
+    console.log('[OID4VCI proof] credential issuer from offer:', offer.credential_issuer);
+
+    const proofJwt = await createProofJwt({
+        issuerKey,
+        issuerDid,
+        audience: issuerBase,
+        cNonce
+    });
+
     const credentialRequest = {
         format: 'jwt_vc_json',
-        credential_definition: {
-            '@context': ['https://www.w3.org/2018/credentials/v1'],
-            type: ['VerifiableCredential', credentialConfigurationId.replace('_jwt_vc_json', '')]
-        }
+        credential_configuration_id: credentialConfigurationId,
+        proof: { proof_type: 'jwt', jwt: proofJwt }
     };
-
-    const headers = {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-    };
-
-    if (tokenResponse.data.c_nonce) {
-        headers.c_nonce = tokenResponse.data.c_nonce;
-    }
 
     const credentialResponse = await axios.post(
         `${issuerBase}/credential`,
         credentialRequest,
-        { headers, timeout: 30000 }
+        {
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            timeout: 30000,
+            validateStatus: () => true
+        }
     );
 
     const jwt = credentialResponse.data?.credential
         || credentialResponse.data?.credentials?.[0]?.credential
-        || credentialResponse.data;
+        || (typeof credentialResponse.data === 'string' ? credentialResponse.data : null);
 
-    if (typeof jwt !== 'string' || !jwt.includes('.')) {
-        throw new Error('Issuer credential endpoint ni vrnil JWT');
+    if (typeof jwt === 'string' && jwt.includes('.')) {
+        return jwt;
     }
 
-    return jwt;
+    throw new Error(`Issuer credential ${credentialResponse.status}: ${JSON.stringify(credentialResponse.data)?.slice(0, 300)}`);
+}
+
+function normalizeOfferString(offerStr) {
+    let normalized = String(offerStr).trim().replace(/%$/, '');
+
+    if (!normalized.startsWith('openid-credential-offer://')) {
+        return rewriteLocalServiceUrl(normalized);
+    }
+
+    try {
+        const httpLike = normalized.replace(/^openid-credential-offer:\/\//, 'http://');
+        const url = new URL(httpLike);
+
+        const credentialOfferUri = url.searchParams.get('credential_offer_uri');
+        if (credentialOfferUri) {
+            const decoded = decodeURIComponent(credentialOfferUri);
+            const rewritten = rewriteLocalServiceUrl(decoded);
+            url.searchParams.set('credential_offer_uri', rewritten);
+            return url.toString().replace(/^http:\/\//, 'openid-credential-offer://');
+        }
+
+        const inlineOffer = url.searchParams.get('credential_offer');
+        if (inlineOffer) {
+            const parsed = JSON.parse(decodeURIComponent(inlineOffer));
+            if (parsed.credential_issuer) {
+                parsed.credential_issuer = rewriteLocalServiceUrl(parsed.credential_issuer);
+            }
+            url.searchParams.set('credential_offer', JSON.stringify(parsed));
+            return url.toString().replace(/^http:\/\//, 'openid-credential-offer://');
+        }
+    } catch {
+        return rewriteLocalServiceUrl(normalized);
+    }
+
+    return normalized;
+}
+
+function normalizeOfferPayload(offerRaw) {
+    if (!offerRaw) return offerRaw;
+
+    if (typeof offerRaw === 'string') {
+        return normalizeOfferString(offerRaw);
+    }
+
+    if (typeof offerRaw === 'object') {
+        const copy = JSON.parse(JSON.stringify(offerRaw));
+        if (copy.credential_offer_uri) {
+            copy.credential_offer_uri = rewriteLocalServiceUrl(copy.credential_offer_uri);
+        }
+        if (copy.credential_issuer) {
+            copy.credential_issuer = rewriteLocalServiceUrl(copy.credential_issuer);
+        }
+        if (typeof copy.offer === 'string') {
+            copy.offer = normalizeOfferString(copy.offer);
+        }
+        return copy;
+    }
+
+    return offerRaw;
+}
+
+/**
+ * Claim credential prek wallet-api (uradni Walt.id tok — wallet podpiše proof)
+ */
+async function claimCredentialViaWallet(offerRaw, walletId, waltCookie) {
+    if (!walletId || !waltCookie) {
+        throw new Error('Manjka wallet_id ali walt_api_cookie — ponovno se registrirajte v Walt.id');
+    }
+
+    const normalizedOffer = normalizeOfferPayload(offerRaw);
+    const offerString =
+        typeof normalizedOffer === 'string'
+            ? normalizedOffer
+            : JSON.stringify(normalizedOffer);
+
+    console.log('[Walt.id wallet claim] normalized offer for wallet-api:', offerString.slice(0, 200));
+    const response = await axios.post(
+        `${WALLET_API}/wallet/${walletId}/exchange/useOfferRequest`,
+        offerString,
+        {
+            headers: {
+                'Content-Type': 'text/plain',
+                Cookie: waltCookie,
+                Accept: 'application/json'
+            },
+            transformRequest: [(data) => data],
+            timeout: 60000,
+            validateStatus: () => true
+        }
+    );
+
+    if (response.status >= 400) {
+        const originalPreview =
+            typeof offerRaw === 'string'
+                ? offerRaw.slice(0, 220)
+                : JSON.stringify(offerRaw).slice(0, 220);
+
+        const normalizedPreview = offerString.slice(0, 220);
+
+        console.warn('[Walt.id wallet claim debug] original offer preview:', originalPreview);
+        console.warn('[Walt.id wallet claim debug] normalized offer preview:', normalizedPreview);
+
+        throw new Error(
+            `wallet useOfferRequest ${response.status}: ${JSON.stringify(response.data)?.slice(0, 200)}`
+        );
+    }
+
+    const credentials = Array.isArray(response.data) ? response.data : [response.data];
+    const document = credentials[0]?.document || credentials[0]?.credential;
+    if (typeof document !== 'string' || !document.includes('.')) {
+        throw new Error('Wallet ni vrnil JWT credential (document)');
+    }
+
+    return document;
 }
 
 /**
@@ -133,7 +429,9 @@ export async function issueSignedCredential({
     credentialConfigurationId,
     credentialData,
     mapping,
-    subjectDid
+    subjectDid,
+    walletId = null,
+    waltCookie = null
 }) {
     const { issuerKey, issuerDid } = await getIssuerSigningMaterial();
 
@@ -157,13 +455,38 @@ export async function issueSignedCredential({
         `${ISSUER_API}/openid4vc/jwt/issue`,
         issueBody,
         {
-            headers: { 'Content-Type': 'application/json', accept: 'text/plain, application/json' },
-            timeout: 60000
+            headers: { 'Content-Type': 'application/json', Accept: 'text/plain, application/json' },
+            timeout: 60000,
+            responseType: 'text',
+            transformResponse: [(data) => data]
         }
     );
 
-    const offer = parseCredentialOffer(issueResponse.data);
-    const jwt = await claimCredentialFromOffer(offer, credentialConfigurationId);
+    let rawOffer = issueResponse.data;
+    if (typeof rawOffer === 'string' && rawOffer.trim().startsWith('{')) {
+        try {
+            rawOffer = JSON.parse(rawOffer);
+        } catch {
+            // ostane string (URI)
+        }
+    }
+
+    let jwt;
+    let offer = null;
+
+    if (walletId && waltCookie) {
+        try {
+            jwt = await claimCredentialViaWallet(rawOffer, walletId, waltCookie);
+            console.log(`✓ VC claimed via wallet-api (${credentialConfigurationId})`);
+        } catch (walletError) {
+            console.warn(`Wallet claim failed, trying issuer claim: ${walletError.message}`);
+            offer = await resolveCredentialOffer(rawOffer);
+            jwt = await claimCredentialFromOffer(offer, credentialConfigurationId, { issuerKey, issuerDid });
+        }
+    } else {
+        offer = await resolveCredentialOffer(rawOffer);
+        jwt = await claimCredentialFromOffer(offer, credentialConfigurationId, { issuerKey, issuerDid });
+    }
 
     return {
         jwt,
@@ -173,7 +496,7 @@ export async function issueSignedCredential({
     };
 }
 
-export async function issueMedicineCredential(medicine, manufacturer) {
+export async function issueMedicineCredential(medicine, manufacturer, walletOpts = {}) {
     const credentialData = {
         '@context': ['https://www.w3.org/2018/credentials/v1'],
         type: ['VerifiableCredential', 'MedicineCredential'],
@@ -192,14 +515,20 @@ export async function issueMedicineCredential(medicine, manufacturer) {
         }
     };
 
+    // POPRAVLJENO: Bolj robustna podpora za camelCase in snake_case poimenovanja wallet podatkov
+    const walletId = walletOpts.walletId || manufacturer.wallet_id || manufacturer.walletId || null;
+    const waltCookie = walletOpts.waltCookie || manufacturer.walt_api_cookie || manufacturer.waltCookie || null;
+
     return issueSignedCredential({
         credentialConfigurationId: 'MedicineCredential_jwt_vc_json',
         credentialData,
-        subjectDid: manufacturer.did
+        subjectDid: manufacturer.did,
+        walletId,
+        waltCookie
     });
 }
 
-export async function issueTransportCredential(delivery, distributor, medicine) {
+export async function issueTransportCredential(delivery, distributor, medicine, walletOpts = {}) {
     const credentialData = {
         '@context': ['https://www.w3.org/2018/credentials/v1'],
         type: ['VerifiableCredential', 'MedicineTransportCredential'],
@@ -216,10 +545,16 @@ export async function issueTransportCredential(delivery, distributor, medicine) 
         }
     };
 
+    // POPRAVLJENO: Bolj robustna podpora za camelCase in snake_case poimenovanja wallet podatkov
+    const walletId = walletOpts.walletId || distributor.wallet_id || distributor.walletId || null;
+    const waltCookie = walletOpts.waltCookie || distributor.walt_api_cookie || distributor.waltCookie || null;
+
     return issueSignedCredential({
         credentialConfigurationId: 'MedicineTransportCredential_jwt_vc_json',
         credentialData,
-        subjectDid: distributor.did
+        subjectDid: distributor.did,
+        walletId,
+        waltCookie
     });
 }
 
@@ -252,7 +587,7 @@ function structuralVerify(jwt, expectedIssuerDid) {
 }
 
 /**
- * Verify JWT VC using Walt.id Verifier API (with structural fallback)
+ * POPRAVLJENO: Prilagojeno za novejše različice Walt.id Verifier API (odstranjeni 404 endpointi)
  */
 export async function verifyCredentialJwt(jwt, expectedIssuerDid = null) {
     if (!jwt || typeof jwt !== 'string') {
@@ -292,41 +627,28 @@ export async function verifyCredentialJwt(jwt, expectedIssuerDid = null) {
         );
 
         if (response.status >= 200 && response.status < 300) {
-            if (response.data?.verificationResult === true || response.data?.verified === true) {
+            // Novejše različice Walt.id verifierja vračajo "valid": true ali "success": true namesto "verificationResult"
+            const isValid = response.data?.valid === true || 
+                            response.data?.success === true || 
+                            response.data?.verified === true || 
+                            response.data?.verificationResult === true;
+
+            if (isValid) {
                 return {
                     verified: true,
                     message: 'VC kriptografsko preverjen prek Walt.id Verifier API',
                     details: response.data
                 };
+            } else {
+                console.warn('Walt.id Verifier je vrnil 200 OK, vendar validacija politik ni uspela:', response.data);
             }
         }
     } catch (error) {
-        console.log(`Verifier API direct verify: ${error.message}`);
+        console.log(`Verifier API direct verify error: ${error.message}`);
     }
 
-    try {
-        const response = await axios.post(
-            `${VERIFIER_API}/openid4vc/policy/signature/verify`,
-            { verifiableCredential: jwt, credential: jwt },
-            { timeout: 30000, validateStatus: () => true }
-        );
-
-        if (response.status === 200) {
-            const success = response.data?.is_success
-                ?? response.data?.valid
-                ?? response.data?.verificationResult;
-            if (success) {
-                return {
-                    verified: true,
-                    message: 'VC podpis preverjen (signature policy)',
-                    details: response.data
-                };
-            }
-        }
-    } catch (error) {
-        console.log(`Verifier signature policy: ${error.message}`);
-    }
-
+    // Odstranjeni klici na /jwt/verify in /openid4vc/policy/signature/verify, ker v novejših različicah vračajo 404.
+    // Če zgornja uradna validacija ne uspe (ali vrne false), se vrne zgolj strukturni fallback.
     return structuralVerify(jwt, expectedIssuerDid);
 }
 
