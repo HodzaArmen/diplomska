@@ -34,8 +34,13 @@
 
         <section id="section-registration" class="section active">
             <div class="card">
-                <h2>🔐 Prijava v Sistem</h2>
-                <p>Povežite MetaMask denarnico. Obstoječi uporabniki se prijavijo, novi se registrirajo.</p>
+                <h2>🔐 Dostop do sistema</h2>
+                <p><strong>1.</strong> Povežite MetaMask &nbsp;→&nbsp; <strong>2.</strong> Izberite način in vpišite Walt.id podatke.</p>
+
+                <div class="auth-mode-tabs" id="auth-mode-tabs" style="display:none;">
+                    <button type="button" id="tab-login" class="auth-tab active">Prijava</button>
+                    <button type="button" id="tab-register" class="auth-tab">Nova registracija</button>
+                </div>
 
                 <div id="phase-1" class="registration-phase active">
                     <h3>Korak 1: Povežite MetaMask</h3>
@@ -52,7 +57,7 @@
                     <p class="phase-description">Denarnica je registrirana. Vpišite Walt.id email in geslo.</p>
 
                     <div class="form-group">
-                        <label for="walt-login-email">Walt.id Email: <span class="required">*</span></label>
+                        <label for="walt-login-email">Email (prijava v sistem & Walt.id): <span class="required">*</span></label>
                         <input type="email" id="walt-login-email" class="form-control" placeholder="npr. admin@krka.si">
                     </div>
 
@@ -85,13 +90,8 @@
                     </div>
 
                     <div class="form-group">
-                        <label for="company-email">Kontaktni email podjetja: <span class="required">*</span></label>
-                        <input type="email" id="company-email" class="form-control" placeholder="npr. info@farmacija.si">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="walt-register-email">Walt.id Email (prijava): <span class="required">*</span></label>
-                        <input type="email" id="walt-register-email" class="form-control" placeholder="npr. admin@krka.si">
+                        <label for="user-email">Email (prijava v sistem & Walt.id): <span class="required">*</span></label>
+                        <input type="email" id="user-email" class="form-control" placeholder="npr. admin@krka.si">
                     </div>
 
                     <div class="form-group">

@@ -725,3 +725,339 @@ body {
     font-size: 0.875rem;
     margin-top: 0.25rem;
 }
+
+.auth-mode-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1rem 0 1.25rem;
+}
+
+.auth-tab {
+    flex: 1;
+    padding: 0.65rem 1rem;
+    border: 2px solid var(--border-color);
+    background: white;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.auth-tab.active {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    background: #eff6ff;
+}
+
+.medicine-detail-panel {
+    margin-top: 1rem;
+    padding: 1.25rem;
+    background: #f8fafc;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+}
+
+.vc-claims-box {
+    background: #fff;
+    border-left: 4px solid var(--primary-color);
+    padding: 0.75rem 1rem;
+    margin: 0.5rem 0 1rem;
+    font-size: 0.9rem;
+}
+
+.vc-claims-box ul {
+    margin: 0.5rem 0 0;
+    padding-left: 1.25rem;
+}
+
+.detail-table {
+    width: 100%;
+    font-size: 0.875rem;
+    margin: 0.5rem 0 1rem;
+}
+
+.ipfs-preview {
+    max-height: 200px;
+    overflow: auto;
+    font-size: 0.75rem;
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 0.75rem;
+    border-radius: var(--radius);
+}
+
+.btn-sm, .btn-small {
+    font-size: 0.8rem;
+    padding: 0.35rem 0.65rem;
+}
+
+.history-list .text-muted {
+    margin-left: 0.5rem;
+    font-size: 0.85rem;
+}
+
+/* ===== DASHBOARD (enotna struktura) ===== */
+body.dashboard-page {
+    overflow-x: hidden;
+}
+
+.dashboard-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    max-width: 100%;
+}
+
+.dashboard-card {
+    background: white;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+
+.card-header {
+    padding: 1.25rem 1.5rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.card-header h2 {
+    font-size: 1.15rem;
+    margin-bottom: 0.25rem;
+}
+
+.card-desc {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.card-body {
+    padding: 1.25rem 1.5rem;
+}
+
+.card-body-actions {
+    padding-top: 0;
+}
+
+.table-wrap {
+    overflow-x: auto;
+    max-width: 100%;
+}
+
+.table-wrap table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    table-layout: fixed;
+}
+
+.table-wrap th,
+.table-wrap td {
+    padding: 0.65rem 0.5rem;
+    text-align: left;
+    vertical-align: top;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.table-wrap th {
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 2px solid var(--border-color);
+}
+
+.table-wrap tr:not(:last-child) td {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.action-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+}
+
+.detail-host {
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.code-break {
+    word-break: break-all;
+    font-size: 0.8rem;
+}
+
+/* ===== BADGES ===== */
+.badge {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.badge-warning { background: #fef3c7; color: #92400e; }
+.badge-info { background: #dbeafe; color: #1e40af; }
+.badge-success { background: #d1fae5; color: #065f46; }
+.badge-neutral { background: #f1f5f9; color: #475569; }
+
+/* ===== MEDICINE DETAIL PANEL ===== */
+.medicine-detail-panel {
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.detail-header h3 {
+    font-size: 1.25rem;
+    margin-bottom: 0.25rem;
+}
+
+.detail-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 0.5rem 1rem;
+    margin-bottom: 1rem;
+    padding: 0.75rem 1rem;
+    background: white;
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+}
+
+.detail-kv-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 0.35rem 1rem;
+}
+
+.detail-kv {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+}
+
+.detail-k {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.detail-v {
+    font-size: 0.9rem;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.detail-accordion {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    margin-bottom: 0.5rem;
+    background: white;
+}
+
+.detail-accordion summary {
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    font-weight: 600;
+    list-style-position: inside;
+}
+
+.detail-accordion > *:not(summary) {
+    padding: 0 1rem 1rem;
+}
+
+.detail-block {
+    margin-bottom: 0.75rem;
+}
+
+.detail-block h5 {
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+}
+
+.detail-deliveries {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.delivery-chip {
+    padding: 0.5rem 0.75rem;
+    background: #f8fafc;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    border: 1px solid var(--border-color);
+}
+
+.delivery-highlight {
+    border-color: var(--primary-color);
+    background: #eff6ff;
+}
+
+.timeline {
+    margin: 0;
+    padding-left: 1.25rem;
+    font-size: 0.85rem;
+}
+
+.timeline li {
+    margin-bottom: 0.5rem;
+}
+
+.timeline-label {
+    font-weight: 600;
+    display: block;
+}
+
+.timeline-meta,
+.timeline-time {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.detail-split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.detail-split h5 {
+    margin-bottom: 0.5rem;
+}
+
+.link-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.btn-ghost {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 0.35rem 0.6rem;
+    border-radius: var(--radius);
+    cursor: pointer;
+}
+
+.btn-ghost:hover {
+    background: var(--light-bg);
+}
+
+.footer {
+    text-align: center;
+    padding: 1.5rem;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
