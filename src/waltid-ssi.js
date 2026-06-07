@@ -497,18 +497,25 @@ export async function issueSignedCredential({
 }
 
 export async function issueMedicineCredential(medicine, manufacturer, walletOpts = {}) {
+    const now = new Date().toISOString();
     const credentialData = {
         '@context': ['https://www.w3.org/2018/credentials/v1'],
         type: ['VerifiableCredential', 'MedicineCredential'],
         issuer: { id: manufacturer.did },
-        issuanceDate: new Date().toISOString(),
+        issuanceDate: now,
         credentialSubject: {
             id: manufacturer.did,
+            eventType: 'MANUFACTURED',
+            eventTimestamp: now,
             medicineId: medicine.medicineId,
             name: medicine.name,
             batchNumber: medicine.batchNumber,
             quantity: medicine.quantity,
             expiryDate: medicine.expiryDate,
+            creatorRole: 'manufacturer',
+            creatorName: manufacturer.companyName || manufacturer.company_name,
+            creatorWallet: manufacturer.wallet_address,
+            creatorDID: manufacturer.did,
             manufacturer: manufacturer.companyName || manufacturer.company_name,
             manufacturerDID: manufacturer.did,
             description: medicine.description || ''
@@ -528,34 +535,80 @@ export async function issueMedicineCredential(medicine, manufacturer, walletOpts
     });
 }
 
-export async function issueTransportCredential(delivery, distributor, medicine, walletOpts = {}) {
+/**
+ * VC za vsak korak dobave: kdo pošilja, komu, koliko, kdaj.
+ * eventType: SENT_TO_DISTRIBUTOR | FORWARDED_TO_PHARMACY
+ */
+export async function issueHandoffCredential({
+    delivery,
+    medicine,
+    sender,
+    recipient,
+    eventType,
+    walletOpts = {}
+}) {
+    const now = new Date().toISOString();
+    const medicineId = medicine.medicine_id || medicine.medicineId;
+    const deliveryId = delivery.delivery_id || delivery.deliveryId;
+
     const credentialData = {
         '@context': ['https://www.w3.org/2018/credentials/v1'],
         type: ['VerifiableCredential', 'MedicineTransportCredential'],
-        issuer: { id: distributor.did },
-        issuanceDate: new Date().toISOString(),
+        issuer: { id: sender.did },
+        issuanceDate: now,
         credentialSubject: {
-            id: distributor.did,
-            medicineId: medicine.medicine_id || medicine.medicineId,
-            deliveryId: delivery.delivery_id || delivery.deliveryId,
+            id: sender.did,
+            eventType,
+            eventTimestamp: now,
+            medicineId,
+            medicineName: medicine.name,
+            batchNumber: medicine.batch_number || medicine.batchNumber,
+            deliveryId,
             quantity: delivery.quantity,
-            distributor: distributor.company_name || distributor.companyName,
-            distributorDID: distributor.did,
-            batchNumber: medicine.batch_number || medicine.batchNumber
+            senderRole: sender.role,
+            senderName: sender.company_name || sender.companyName,
+            senderWallet: sender.wallet_address,
+            senderDID: sender.did,
+            recipientRole: recipient.role,
+            recipientName: recipient.company_name || recipient.companyName || recipient.target_pharmacy_name,
+            recipientWallet: recipient.wallet_address,
+            recipientDID: recipient.did || null
         }
     };
 
-    // POPRAVLJENO: Bolj robustna podpora za camelCase in snake_case poimenovanja wallet podatkov
-    const walletId = walletOpts.walletId || distributor.wallet_id || distributor.walletId || null;
-    const waltCookie = walletOpts.waltCookie || distributor.walt_api_cookie || distributor.waltCookie || null;
+    const walletId = walletOpts.walletId || sender.wallet_id || sender.walletId || null;
+    const waltCookie = walletOpts.waltCookie || sender.walt_api_cookie || sender.waltCookie || null;
 
     return issueSignedCredential({
         credentialConfigurationId: 'MedicineTransportCredential_jwt_vc_json',
         credentialData,
-        subjectDid: distributor.did,
+        subjectDid: sender.did,
         walletId,
         waltCookie
     });
+}
+
+/** @deprecated uporabi issueHandoffCredential */
+export async function issueTransportCredential(delivery, distributor, medicine, walletOpts = {}) {
+    return issueHandoffCredential({
+        delivery,
+        medicine,
+        sender: distributor,
+        recipient: { role: 'pharmacy', company_name: delivery.target_pharmacy_name },
+        eventType: 'FORWARDED_TO_PHARMACY',
+        walletOpts
+    });
+}
+
+export function decodeVcClaims(jwt) {
+    if (!jwt || typeof jwt !== 'string' || !jwt.includes('.')) return null;
+    try {
+        const payload = decodeJwtPayload(jwt);
+        const vc = payload.vc || payload;
+        return vc.credentialSubject || payload.credentialSubject || null;
+    } catch {
+        return null;
+    }
 }
 
 function decodeJwtPayload(jwt) {

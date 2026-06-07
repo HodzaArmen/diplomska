@@ -24,7 +24,12 @@ import {
     verifyIpfsAccessible
 } from './ipfs.js';
 import { initializeBlockchain, registerMedicineOnBlockchain, getMedicineFromBlockchain, getMedicineHistory } from './blockchain.js';
-import { issueMedicineCredential, issueTransportCredential, verifyCredentialJwt } from './waltid-ssi.js';
+import {
+    issueMedicineCredential,
+    issueHandoffCredential,
+    verifyCredentialJwt,
+    decodeVcClaims
+} from './waltid-ssi.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -37,7 +42,17 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// Čisti URL-ji dashboardov (brez .html)
+app.get('/manufacturer', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'manufacturer-dashboard.html')));
+app.get('/distributor', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'distributor-dashboard.html')));
+app.get('/pharmacy', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pharmacy-dashboard.html')));
+app.get('/manufacturer-dashboard.html', (_req, res) => res.redirect(301, '/manufacturer'));
+app.get('/distributor-dashboard.html', (_req, res) => res.redirect(301, '/distributor'));
+app.get('/pharmacy-dashboard.html', (_req, res) => res.redirect(301, '/pharmacy'));
+
+app.use(express.static(PUBLIC_DIR));
 
 // ===== RATE LIMITING =====
 const apiLimiter = rateLimit({
@@ -203,6 +218,187 @@ async function pingWaltService(baseUrl, path = '/') {
     } catch (error) {
         return { ok: false, error: error.message, url: baseUrl };
     }
+}
+
+function parseStoredVcRecord(vcRaw) {
+    if (!vcRaw) return { signed: false, jwt: null, claims: null, error: null };
+    try {
+        const parsed = typeof vcRaw === 'string' ? JSON.parse(vcRaw) : vcRaw;
+        const jwt = parsed.signedJwt || parsed.jwt || (typeof parsed === 'string' && parsed.includes('.') ? parsed : null);
+        return {
+            signed: Boolean(jwt || parsed.signed === true),
+            jwt,
+            claims: jwt ? decodeVcClaims(jwt) : null,
+            error: parsed.error || null
+        };
+    } catch {
+        if (typeof vcRaw === 'string' && vcRaw.includes('.')) {
+            return { signed: true, jwt: vcRaw, claims: decodeVcClaims(vcRaw), error: null };
+        }
+        return { signed: false, jwt: null, claims: null, error: null };
+    }
+}
+
+async function userCanAccessMedicine(wallet, role, medicineId) {
+    if (role === 'manufacturer') {
+        const r = await pool.query(
+            'SELECT 1 FROM medicines WHERE medicine_id = $1 AND manufacturer_wallet = $2',
+            [medicineId, wallet]
+        );
+        return r.rows.length > 0;
+    }
+    if (role === 'distributor') {
+        const r = await pool.query(
+            `SELECT 1 FROM deliveries
+             WHERE medicine_id = $1 AND (source_wallet = $2 OR target_wallet = $2)`,
+            [medicineId, wallet]
+        );
+        return r.rows.length > 0;
+    }
+    if (role === 'pharmacy') {
+        const r = await pool.query(
+            `SELECT 1 FROM deliveries
+             WHERE medicine_id = $1 AND target_wallet = $2
+               AND status IN ('IN_TRANSIT', 'DELIVERED')`,
+            [medicineId, wallet]
+        );
+        return r.rows.length > 0;
+    }
+    return false;
+}
+
+async function buildMedicineDetailsResponse(medicineId, { viewerWallet, viewerRole, deliveryId = null } = {}) {
+    const medicineResult = await pool.query(
+        `SELECT m.*, u.company_name AS manufacturer_name
+         FROM medicines m
+         JOIN users u ON m.manufacturer_wallet = u.wallet_address
+         WHERE m.medicine_id = $1`,
+        [medicineId]
+    );
+    if (medicineResult.rows.length === 0) return null;
+
+    const medicine = medicineResult.rows[0];
+
+    const historyResult = await pool.query(
+        `SELECT action, actor_wallet, actor_role, actor_did, created_at, details, delivery_id, blockchain_tx_hash
+         FROM supply_chain_history WHERE medicine_id = $1 ORDER BY created_at ASC`,
+        [medicineId]
+    );
+
+    const deliveriesResult = await pool.query(
+        `SELECT d.*,
+                sw.company_name AS source_name, tw.company_name AS target_name
+         FROM deliveries d
+         LEFT JOIN users sw ON d.source_wallet = sw.wallet_address
+         LEFT JOIN users tw ON d.target_wallet = tw.wallet_address
+         WHERE d.medicine_id = $1 ORDER BY d.created_at ASC`,
+        [medicineId]
+    );
+
+    const displayHistory = historyResult.rows
+        .filter(row => row.action !== 'ADDED_TO_DELIVERY' || !historyResult.rows.some(r => r.action === 'SENT_TO_DISTRIBUTOR'))
+        .map(row => ({
+            action: row.action,
+            actionLabel: SUPPLY_CHAIN_ACTION_LABELS[row.action] || row.action,
+            actor: row.actor_wallet,
+            actorRole: row.actor_role,
+            deliveryId: row.delivery_id,
+            timestamp: row.created_at,
+            blockchainTxHash: row.blockchain_tx_hash,
+            details: row.details ? (typeof row.details === 'string' ? JSON.parse(row.details) : row.details) : null
+        }));
+
+    const medicineVc = parseStoredVcRecord(medicine.vc_credential);
+
+    const deliveries = deliveriesResult.rows.map((d) => {
+        const vc = parseStoredVcRecord(d.transport_vc_credential);
+        return {
+            deliveryId: d.delivery_id,
+            quantity: d.quantity,
+            status: d.status,
+            sourceRole: d.source_role,
+            sourceName: d.source_name,
+            sourceWallet: d.source_wallet,
+            targetRole: d.target_role,
+            targetName: d.target_pharmacy_name || d.target_name,
+            targetWallet: d.target_wallet,
+            createdAt: d.created_at,
+            receivedAt: d.received_at,
+            transportVcSigned: vc.signed,
+            transportVcClaims: vc.claims
+        };
+    });
+
+    let receivedQuantity = medicine.quantity;
+    if (viewerRole === 'pharmacy' && viewerWallet) {
+        if (deliveryId) {
+            const d = deliveries.find((x) => x.deliveryId === deliveryId);
+            receivedQuantity = d?.quantity ?? 0;
+        } else {
+            receivedQuantity = deliveries
+                .filter((d) => d.targetWallet === viewerWallet && d.status === 'DELIVERED')
+                .reduce((sum, d) => sum + d.quantity, 0);
+        }
+    }
+
+    const onChain = await loadOnChainMedicine(medicineId);
+    const blockchainExplorer = getBlockchainExplorerLinks(medicine.blockchain_tx_hash, {
+        manufacturer: onChain.medicine?.manufacturer
+            ? `${ETHERSCAN_BASE}/address/${onChain.medicine.manufacturer}`
+            : null
+    });
+
+    let ipfsPreview = null;
+    if (medicine.ipfs_hash) {
+        try {
+            ipfsPreview = await fetchIpfsJson(medicine.ipfs_hash);
+        } catch {
+            ipfsPreview = null;
+        }
+    }
+
+    const availableMfg = medicine.quantity - deliveries
+        .filter((d) => d.sourceRole === 'manufacturer')
+        .reduce((s, d) => s + d.quantity, 0);
+    const pendingQty = deliveries.filter((d) => d.status === 'PENDING').reduce((s, d) => s + d.quantity, 0);
+    const stockParts = [];
+    if (availableMfg > 0) stockParts.push(`${availableMfg} na zalogi`);
+    if (pendingQty > 0) stockParts.push(`${pendingQty} čaka prevzem`);
+
+    return {
+        medicineId: medicine.medicine_id,
+        name: medicine.name,
+        stockStatusLabel: stockParts.length ? stockParts.join(' · ') : null,
+        batchNumber: medicine.batch_number,
+        totalManufacturedQuantity: medicine.quantity,
+        receivedQuantity,
+        quantity: viewerRole === 'pharmacy' ? receivedQuantity : medicine.quantity,
+        expiryDate: formatDateOnly(medicine.expiry_date),
+        manufacturerName: medicine.manufacturer_name,
+        manufacturerWallet: medicine.manufacturer_wallet,
+        description: medicine.description,
+        blockchainStatus: medicine.blockchain_status,
+        txHash: medicine.blockchain_tx_hash,
+        ipfsHash: medicine.ipfs_hash,
+        ipfsLinks: getIpfsLinks(medicine.ipfs_hash),
+        ipfsPreview,
+        vcSigned: medicineVc.signed,
+        medicineVcClaims: medicineVc.claims,
+        onChainRegistered: Boolean(medicine.blockchain_tx_hash),
+        blockchainExplorer,
+        onChain,
+        supplyChainHistory: displayHistory,
+        deliveries,
+        storage: {
+            postgres: {
+                medicines: 'medicines (vc_credential, ipfs_hash, blockchain_tx_hash)',
+                deliveries: 'deliveries (transport_vc_credential po pošiljki)',
+                history: 'supply_chain_history (vsak dogodek)'
+            },
+            ipfs: medicine.ipfs_hash ? `Pinata CID ${medicine.ipfs_hash}` : null,
+            blockchain: medicine.blockchain_tx_hash ? `Sepolia TX ${medicine.blockchain_tx_hash}` : null
+        }
+    };
 }
 
 function extractJwtFromVcCredential(vcCredentialRaw) {
@@ -904,6 +1100,12 @@ app.post('/api/medicines/create', async (req, res) => {
                     batchNumber,
                     quantity,
                     expiryDate,
+                    eventType: 'MANUFACTURED',
+                    eventTimestamp: new Date().toISOString(),
+                    creatorRole: 'manufacturer',
+                    creatorName: user.company_name,
+                    creatorWallet: user.wallet_address,
+                    creatorDID: user.did,
                     manufacturer: user.company_name,
                     manufacturerDID: user.did,
                     description: description || '',
@@ -1053,27 +1255,54 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
         }
 
         const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
-        const distributorName = targetDistributorName || distributorResult.rows[0].company_name;
+        const distributor = distributorResult.rows[0];
+        const distributorName = targetDistributorName || distributor.company_name;
+
+        if (!manufacturer.walt_api_cookie) {
+            return res.status(400).json({
+                error: 'Manjka Walt.id seja. Ponovno se prijavite na domači strani.'
+            });
+        }
+
+        let transportVc = null;
+        try {
+            if (manufacturer.did) {
+                const issued = await issueHandoffCredential({
+                    delivery: { delivery_id: deliveryId, quantity },
+                    medicine,
+                    sender: manufacturer,
+                    recipient: distributor,
+                    eventType: 'SENT_TO_DISTRIBUTOR',
+                    walletOpts: { walletId: manufacturer.wallet_id, waltCookie: manufacturer.walt_api_cookie }
+                });
+                transportVc = JSON.stringify({ signedJwt: issued.jwt, issuerDid: issued.issuerDid, signed: true, claims: decodeVcClaims(issued.jwt) });
+                console.log(`✓ Handoff VC (→ distributor) ${deliveryId}`);
+            }
+        } catch (vcError) {
+            console.error(`✗ Handoff VC failed: ${vcError.message}`);
+            transportVc = JSON.stringify({ signed: false, error: vcError.message });
+        }
 
         await pool.query(
             `INSERT INTO deliveries
              (delivery_id, medicine_id, source_wallet, source_role, target_wallet, target_role,
-              target_pharmacy_name, quantity, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+              target_pharmacy_name, quantity, status, transport_vc_credential)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
             [deliveryId, medicineId, manufacturer.wallet_address, 'manufacturer',
-             targetDistributorWallet, 'distributor', distributorName, quantity, 'PENDING']
-        );
-
-        await pool.query(
-            `UPDATE medicines SET blockchain_status = 'IN_TRANSIT' WHERE medicine_id = $1`,
-            [medicineId]
+             targetDistributorWallet, 'distributor', distributorName, quantity, 'PENDING', transportVc]
         );
 
         await pool.query(
             `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
              VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [medicineId, deliveryId, 'SENT_TO_DISTRIBUTOR', manufacturer.wallet_address, 'manufacturer',
-             manufacturer.did, JSON.stringify({ quantity, targetDistributorName: distributorName })]
+             manufacturer.did, JSON.stringify({
+                 quantity,
+                 targetDistributorName: distributorName,
+                 transportVcIssued: (() => {
+                     try { return Boolean(JSON.parse(transportVc || '{}').signedJwt); } catch { return false; }
+                 })()
+             })]
         );
 
         res.json({
@@ -1084,7 +1313,10 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
                 medicineId,
                 quantity,
                 targetDistributorName: distributorName,
-                status: 'PENDING'
+                status: 'PENDING',
+                transportVcIssued: (() => {
+                    try { return Boolean(JSON.parse(transportVc || '{}').signedJwt); } catch { return false; }
+                })()
             }
         });
     } catch (error) {
@@ -1116,7 +1348,9 @@ app.get('/api/medicines/my-medicines', async (req, res) => {
         const medicinesResult = await pool.query(
             `SELECT m.*,
                     COALESCE(SUM(d.quantity), 0) AS shipped_quantity,
-                    m.quantity - COALESCE(SUM(d.quantity), 0) AS available_quantity
+                    m.quantity - COALESCE(SUM(d.quantity), 0) AS available_quantity,
+                    COALESCE(SUM(CASE WHEN d.status = 'PENDING' THEN d.quantity ELSE 0 END), 0) AS pending_quantity,
+                    COALESCE(SUM(CASE WHEN d.status = 'RECEIVED' THEN d.quantity ELSE 0 END), 0) AS at_distributor_quantity
              FROM medicines m
              LEFT JOIN deliveries d ON m.medicine_id = d.medicine_id
                 AND d.source_wallet = m.manufacturer_wallet
@@ -1127,11 +1361,21 @@ app.get('/api/medicines/my-medicines', async (req, res) => {
             [manufacturer.wallet_address]
         );
 
-        const medicines = medicinesResult.rows.map(row => ({
-            ...row,
-            ipfsLinks: getIpfsLinks(row.ipfs_hash),
-            vcSigned: Boolean(extractJwtFromVcCredential(row.vc_credential))
-        }));
+        const medicines = medicinesResult.rows.map(row => {
+            const available = parseInt(row.available_quantity ?? 0, 10);
+            const pending = parseInt(row.pending_quantity ?? 0, 10);
+            const atDist = parseInt(row.at_distributor_quantity ?? 0, 10);
+            const parts = [];
+            if (available > 0) parts.push(`${available} na zalogi`);
+            if (pending > 0) parts.push(`${pending} čaka prevzem`);
+            if (atDist > 0) parts.push(`${atDist} pri distributorju`);
+            return {
+                ...row,
+                stock_status_label: parts.length ? parts.join(' · ') : 'Vse poslano',
+                ipfsLinks: getIpfsLinks(row.ipfs_hash),
+                vcSigned: Boolean(extractJwtFromVcCredential(row.vc_credential))
+            };
+        });
 
         res.json({
             success: true,
@@ -1297,6 +1541,28 @@ app.get('/api/distributor/incoming-deliveries', async (req, res) => {
 });
 
 // 10b. DISTRIBUTOR: Receive delivery from manufacturer
+async function verifyIncomingDeliveryCredentials(medicine, transportVcRaw, expectedSenderDid) {
+    const medicineJwt = extractJwtFromVcCredential(medicine?.vc_credential);
+    const transportJwt = extractJwtFromVcCredential(transportVcRaw);
+
+    let medicineVc = { verified: false, message: 'VC zdravila ni na voljo' };
+    let transportVc = { verified: false, message: 'VC pošiljke ni na voljo' };
+
+    if (medicineJwt) {
+        medicineVc = await verifyCredentialJwt(medicineJwt, medicine.manufacturer_did);
+    }
+    if (transportJwt) {
+        transportVc = await verifyCredentialJwt(transportJwt, expectedSenderDid);
+    }
+
+    let ipfs = { accessible: false, message: 'IPFS hash ni v bazi' };
+    if (medicine.ipfs_hash) {
+        ipfs = await verifyIpfsAccessible(medicine.ipfs_hash);
+    }
+
+    return { medicineVc, transportVc, ipfs };
+}
+
 app.post('/api/distributor/receive-delivery', async (req, res) => {
     try {
         const { sessionId, deliveryId } = req.body;
@@ -1310,25 +1576,36 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
-        await pool.query(
-            `UPDATE deliveries
-             SET status = 'RECEIVED', received_at = CURRENT_TIMESTAMP
-             WHERE delivery_id = $1 AND target_wallet = $2
-               AND source_role = 'manufacturer' AND status = 'PENDING'`,
+        const pendingDelivery = await pool.query(
+            `SELECT d.*, m.*, u.did AS sender_did
+             FROM deliveries d
+             JOIN medicines m ON d.medicine_id = m.medicine_id
+             JOIN users u ON d.source_wallet = u.wallet_address
+             WHERE d.delivery_id = $1 AND d.target_wallet = $2
+               AND d.source_role = 'manufacturer' AND d.status = 'PENDING'`,
             [deliveryId, distributorWallet]
         );
 
-        const deliveryRow = await pool.query(
-            `SELECT medicine_id, quantity FROM deliveries
-             WHERE delivery_id = $1 AND target_wallet = $2 AND status = 'RECEIVED'`,
-            [deliveryId, distributorWallet]
-        );
-
-        if (deliveryRow.rows.length === 0) {
+        if (pendingDelivery.rows.length === 0) {
             return res.status(404).json({ error: 'Dostava ni najdena ali je že sprejeta' });
         }
 
-        const { medicine_id: medicineId, quantity } = deliveryRow.rows[0];
+        const row = pendingDelivery.rows[0];
+        const medicineId = row.medicine_id;
+        const quantity = row.quantity;
+        const medicine = row;
+
+        const verification = await verifyIncomingDeliveryCredentials(
+            medicine,
+            row.transport_vc_credential,
+            row.sender_did
+        );
+
+        await pool.query(
+            `UPDATE deliveries SET status = 'RECEIVED', received_at = CURRENT_TIMESTAMP
+             WHERE delivery_id = $1 AND target_wallet = $2`,
+            [deliveryId, distributorWallet]
+        );
 
         const distributorResult = await pool.query(
             'SELECT * FROM users WHERE wallet_address = $1',
@@ -1340,10 +1617,23 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
             `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
              VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [medicineId, deliveryId, 'RECEIVED_BY_DISTRIBUTOR', distributorWallet, 'distributor',
-             distributor.did, JSON.stringify({ quantity, receivedAt: new Date().toISOString() })]
+             distributor.did, JSON.stringify({
+                 quantity,
+                 receivedAt: new Date().toISOString(),
+                 medicineVcVerified: verification.medicineVc.verified,
+                 transportVcVerified: verification.transportVc.verified
+             })]
         );
 
-        res.json({ success: true, message: 'Dostava uspešno sprejeta v inventar' });
+        const vcOk = verification.medicineVc.verified && verification.transportVc.verified;
+
+        res.json({
+            success: true,
+            message: vcOk
+                ? 'Pošiljka sprejeta — VC in IPFS preverjeni'
+                : 'Pošiljka sprejeta — preverite opozorila',
+            verification
+        });
     } catch (error) {
         console.error('Distributor receive delivery error:', error.message);
         res.status(500).json({ error: error.message });
@@ -1593,6 +1883,7 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
         );
         const medicine = medicineResult.rows[0];
         const distributor = distributorResult.rows[0];
+        const pharmacy = pharmacyResult.rows[0];
 
         if (!distributor.walt_api_cookie) {
             return res.status(400).json({
@@ -1603,17 +1894,19 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
         let transportVc = null;
         try {
             if (distributor.did) {
-                const issued = await issueTransportCredential(
-                    { delivery_id: deliveryId, deliveryId, quantity },
-                    distributor,
+                const issued = await issueHandoffCredential({
+                    delivery: { delivery_id: deliveryId, deliveryId, quantity, target_pharmacy_name: targetPharmacyName },
                     medicine,
-                    { walletId: distributor.wallet_id, waltCookie: distributor.walt_api_cookie }
-                );
-                transportVc = JSON.stringify({ signedJwt: issued.jwt, issuerDid: issued.issuerDid, signed: true });
-                console.log(`✓ Transport VC issued for delivery ${deliveryId}`);
+                    sender: distributor,
+                    recipient: pharmacy,
+                    eventType: 'FORWARDED_TO_PHARMACY',
+                    walletOpts: { walletId: distributor.wallet_id, waltCookie: distributor.walt_api_cookie }
+                });
+                transportVc = JSON.stringify({ signedJwt: issued.jwt, issuerDid: issued.issuerDid, signed: true, claims: decodeVcClaims(issued.jwt) });
+                console.log(`✓ Handoff VC (→ pharmacy) ${deliveryId}`);
             }
         } catch (vcError) {
-            console.error(`✗ Transport VC failed: ${vcError.message}`);
+            console.error(`✗ Handoff VC failed: ${vcError.message}`);
             transportVc = JSON.stringify({ signed: false, error: vcError.message });
         }
 
@@ -1850,113 +2143,49 @@ app.get('/api/pharmacy/my-inventory', async (req, res) => {
     }
 });
 
-// 14. PHARMACY: Get medicine details with full supply chain info
-app.get('/api/pharmacy/medicine-details/:medicineId', async (req, res) => {
+async function handleMedicineDetailsRequest(req, res) {
     try {
-        const { medicineId } = req.params;
+        const medicineId = req.params.medicineId;
         const { sessionId, deliveryId } = req.query;
 
-        if (!sessionId) {
-            return res.status(401).json({ error: 'Invalid or expired session' });
+        if (!sessionId || !(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Neveljavna seja' });
         }
 
-        if (!(await isSessionValid(sessionId))) {
-            return res.status(401).json({ error: 'Invalid or expired session' });
-        }
-
-        const pharmacyWallet = await getSessionWallet(sessionId);
-        if (!pharmacyWallet) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        
-        const medicineResult = await pool.query(
-            `SELECT m.*, u.company_name as manufacturer_name 
-             FROM medicines m 
-             JOIN users u ON m.manufacturer_wallet = u.wallet_address 
-             WHERE m.medicine_id = $1`,
-            [medicineId]
+        const userResult = await pool.query(
+            'SELECT wallet_address, role FROM users WHERE session_id = $1',
+            [sessionId]
         );
-        
-        if (medicineResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Medicine not found' });
+        if (userResult.rows.length === 0) {
+            return res.status(401).json({ error: 'Uporabnik ni najden' });
         }
-        
-        const medicine = medicineResult.rows[0];
 
-        let receivedQuantity = 0;
-        if (deliveryId) {
-            const deliveryResult = await pool.query(
-                `SELECT quantity FROM deliveries
-                 WHERE delivery_id = $1 AND medicine_id = $2 AND target_wallet = $3 AND status = 'DELIVERED'`,
-                [deliveryId, medicineId, pharmacyWallet]
-            );
-            receivedQuantity = deliveryResult.rows[0]?.quantity ?? 0;
-        } else {
-            const qtyResult = await pool.query(
-                `SELECT COALESCE(SUM(quantity), 0) AS total
-                 FROM deliveries
-                 WHERE medicine_id = $1 AND target_wallet = $2 AND status = 'DELIVERED'`,
-                [medicineId, pharmacyWallet]
-            );
-            receivedQuantity = parseInt(qtyResult.rows[0]?.total ?? 0, 10);
+        const { wallet_address: viewerWallet, role: viewerRole } = userResult.rows[0];
+
+        if (!(await userCanAccessMedicine(viewerWallet, viewerRole, medicineId))) {
+            return res.status(403).json({ error: 'Nimate dostopa do tega zdravila' });
         }
-        
-        const historyResult = await pool.query(
-            `SELECT action, actor_wallet, actor_role, actor_did, created_at, details
-             FROM supply_chain_history 
-             WHERE medicine_id = $1 
-             ORDER BY created_at ASC`,
-            [medicineId]
-        );
 
-        const displayHistory = historyResult.rows
-            .filter(row => row.action !== 'ADDED_TO_DELIVERY' || !historyResult.rows.some(r => r.action === 'SENT_TO_DISTRIBUTOR'))
-            .map(row => ({
-                action: row.action,
-                actionLabel: SUPPLY_CHAIN_ACTION_LABELS[row.action] || row.action,
-                actor: row.actor_wallet,
-                actorRole: row.actor_role,
-                timestamp: row.created_at,
-                details: row.details ? JSON.parse(row.details) : null
-            }));
+        const medicine = await buildMedicineDetailsResponse(medicineId, {
+            viewerWallet,
+            viewerRole,
+            deliveryId: deliveryId || null
+        });
 
-        const onChain = await loadOnChainMedicine(medicineId);
-        const blockchainExplorer = getBlockchainExplorerLinks(medicine.blockchain_tx_hash, {
-            manufacturer: onChain.medicine?.manufacturer
-                ? `${ETHERSCAN_BASE}/address/${onChain.medicine.manufacturer}`
-                : null
-        });
-        
-        res.json({
-            success: true,
-            medicine: {
-                medicineId: medicine.medicine_id,
-                id: medicine.id,
-                name: medicine.name,
-                batchNumber: medicine.batch_number,
-                totalManufacturedQuantity: medicine.quantity,
-                receivedQuantity,
-                quantity: receivedQuantity,
-                expiryDate: formatDateOnly(medicine.expiry_date),
-                manufacturerName: medicine.manufacturer_name,
-                description: medicine.description,
-                blockchainStatus: medicine.blockchain_status,
-                txHash: medicine.blockchain_tx_hash,
-                ipfsHash: medicine.ipfs_hash,
-                ipfsLinks: getIpfsLinks(medicine.ipfs_hash),
-                vcSigned: Boolean(extractJwtFromVcCredential(medicine.vc_credential)),
-                ipfsVerified: Boolean(medicine.ipfs_hash),
-                onChainRegistered: Boolean(medicine.blockchain_tx_hash),
-                blockchainExplorer,
-                onChain,
-                supplyChainHistory: displayHistory
-            }
-        });
+        if (!medicine) {
+            return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+        }
+
+        res.json({ success: true, medicine, viewerRole });
     } catch (error) {
         console.error('Get medicine details error:', error);
         res.status(500).json({ error: error.message });
     }
-});
+}
+
+// 14. Podrobnosti zdravila — vse vloge
+app.get('/api/medicines/:medicineId/details', handleMedicineDetailsRequest);
+app.get('/api/pharmacy/medicine-details/:medicineId', handleMedicineDetailsRequest);
 
 // 15. LOGIN — MetaMask denarnica + Walt.id email + geslo
 app.post('/api/auth/login', async (req, res) => {
