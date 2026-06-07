@@ -124,14 +124,12 @@ async function loadIncomingDeliveries() {
                             <td>${escapeHtml(d.batch_number)}</td>
                             <td>${d.quantity}</td>
                             <td>${formatDisplayDate(d.expiry_date)}</td>
-                            <td><span class="badge badge-warning">${escapeHtml(d.status)}</span></td>
-                            <td>
-                                <button class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">✓ Sprejmi</button>
-                                <button class="btn-small btn-view"
+                            <td>${renderStatusBadge(d.status)}</td>
+                            <td class="action-cell">
+                                <button type="button" class="btn-small btn-preview"
                                     data-medicine-id="${escapeHtml(d.medicine_id)}"
-                                    data-delivery-id="${escapeHtml(d.delivery_id)}">
-                                    👁️ Pregled
-                                </button>
+                                    data-delivery-id="${escapeHtml(d.delivery_id)}">Pregled</button>
+                                <button type="button" class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">Sprejmi</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -139,14 +137,20 @@ async function loadIncomingDeliveries() {
             </table>
         `;
 
+        listDiv.querySelectorAll('.btn-preview').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                try {
+                    await openMedicinePreview(btn.dataset.medicineId, currentSessionId, {
+                        deliveryId: btn.dataset.deliveryId,
+                        onVerify: verifyOnBlockchain
+                    });
+                } catch (e) {
+                    alert(e.message);
+                }
+            });
+        });
         listDiv.querySelectorAll('.btn-receive').forEach(btn => {
             btn.addEventListener('click', () => receiveDelivery(btn.dataset.deliveryId));
-        });
-
-        listDiv.querySelectorAll('.btn-view').forEach(btn => {
-            btn.addEventListener('click', () => {
-                viewMedicineDetails(btn.dataset.medicineId, btn.dataset.deliveryId || null);
-            });
         });
     } catch (error) {
         console.error('Error loading deliveries:', error);
@@ -170,26 +174,8 @@ async function receiveDelivery(deliveryId) {
             throw new Error(data.error || 'Napaka pri sprejemu dostave');
         }
 
-        const medVc = data.verification?.medicineVc;
-        const trVc = data.verification?.transportVc;
-        const ipfs = data.verification?.ipfs;
-        const ipfsLinks = data.verification?.ipfsLinks;
-        let msg = data.message || '✓ Dostava sprejeta!\n';
-        msg += '\n';
-        msg += medVc?.verified
-            ? `✓ VC zdravila (issuer): ${medVc.message}\n`
-            : `⚠ VC zdravila: ${medVc?.message || 'ni preverjeno'}\n`;
-        msg += trVc?.verified
-            ? `✓ VC distributorja (verifier-api): ${trVc.message}\n`
-            : `⚠ VC distributorja: ${trVc?.message || 'ni na voljo'}\n`;
-        msg += ipfs?.accessible
-            ? `✓ IPFS vsebina dostopna (${ipfs.gateway || 'gateway'})\n`
-            : `⚠ IPFS: ${ipfs?.error || ipfs?.message || 'ni preverjeno'}\n`;
-        if (ipfsLinks) {
-            msg += `\nIPFS:\n${ipfsLinks.ipfsIo}\n${ipfsLinks.pinata}`;
-        }
-
-        console.log(msg);
+        let msg = data.message || 'Dostava sprejeta.';
+        if (data.verification) msg += '\n\n' + formatVerificationAlert(data.verification);
         alert(msg);
 
         await loadIncomingDeliveries();
@@ -198,71 +184,6 @@ async function receiveDelivery(deliveryId) {
         console.error('Error receiving delivery:', error);
         alert('Napaka: ' + error.message);
     }
-}
-
-async function viewMedicineDetails(medicineId, deliveryId = null) {
-    try {
-        let url = `/api/pharmacy/medicine-details/${encodeURIComponent(medicineId)}?sessionId=${encodeURIComponent(currentSessionId)}`;
-        if (deliveryId) {
-            url += `&deliveryId=${encodeURIComponent(deliveryId)}`;
-        }
-
-        const response = await fetch(url);
-        if (!response.ok) throw new Error('Napaka pri nalaganju podatkov zdravila');
-
-        const data = await response.json();
-        if (!data.medicine) {
-            throw new Error('Podatki o zdravilu niso na voljo');
-        }
-
-        displayMedicineVisualizer(data.medicine);
-    } catch (error) {
-        console.error('Error loading medicine details:', error);
-        alert('Napaka: ' + error.message);
-    }
-}
-
-function displayMedicineVisualizer(medicine) {
-    const visualizerDiv = document.getElementById('medicine-visualizer');
-    visualizerDiv.style.display = 'block';
-
-    const history = medicine.supplyChainHistory || [];
-    const historyHtml = history.length === 0
-        ? '<p class="text-muted">Ni zgodovine.</p>'
-        : `<ul>${history.map(h => `
-            <li><strong>${escapeHtml(h.actionLabel || h.action)}</strong> — ${escapeHtml(h.actorRole || '')} (${formatDisplayDateTime(h.timestamp)})</li>
-        `).join('')}</ul>`;
-
-    const totalQty = medicine.totalManufacturedQuantity ?? medicine.quantity;
-    const receivedQty = medicine.receivedQuantity ?? medicine.quantity;
-    const quantityNote = receivedQty !== totalQty
-        ? `${receivedQty} enot (prejeto v lekarni) / ${totalQty} skupaj proizvedenih`
-        : `${receivedQty} enot`;
-
-    visualizerDiv.innerHTML = `
-        <div class="visualizer-container">
-            <h3>🏥 ${escapeHtml(medicine.name)}</h3>
-            <div class="medicine-info-grid">
-                <div class="info-card"><strong>ID</strong><p>${escapeHtml(medicine.medicineId)}</p></div>
-                <div class="info-card"><strong>Serijska</strong><p>${escapeHtml(medicine.batchNumber)}</p></div>
-                <div class="info-card"><strong>Količina</strong><p>${quantityNote}</p></div>
-                <div class="info-card"><strong>Rok</strong><p>${formatDisplayDate(medicine.expiryDate)}</p></div>
-                <div class="info-card"><strong>Proizvajalec</strong><p>${escapeHtml(medicine.manufacturerName)}</p></div>
-                <div class="info-card"><strong>Status</strong><p>${escapeHtml(medicine.blockchainStatus)}</p></div>
-            </div>
-            <h4>📦 Pot dobave</h4>
-            ${historyHtml}
-            <h4>⛓️ Blockchain & IPFS</h4>
-            ${renderIpfsLinksHtml(medicine.ipfsHash)}
-            ${renderBlockchainExplorerHtml(medicine)}
-            <p><strong>VC podpis (Walt.id):</strong> ${medicine.vcSigned ? '✓ Da' : '⚠ Ne (stari zapis)'}</p>
-            <button class="btn btn-verify" data-medicine-id="${escapeHtml(medicine.medicineId)}">🔗 Preveri avtentičnost (VC + blockchain)</button>
-        </div>
-    `;
-
-    visualizerDiv.querySelector('.btn-verify')?.addEventListener('click', async (e) => {
-        await verifyOnBlockchain(e.target.dataset.medicineId);
-    });
 }
 
 async function verifyOnBlockchain(medicineId) {
@@ -323,13 +244,11 @@ async function loadMyInventory() {
                             <td>${escapeHtml(m.batch_number)}</td>
                             <td>${m.quantity}</td>
                             <td>${formatDisplayDate(m.expiry_date)}</td>
-                            <td><span class="badge badge-success">${escapeHtml(m.blockchain_status)}</span></td>
+                            <td>${renderStatusBadge(m.blockchain_status, 'medicine')}</td>
                             <td>
-                                <button class="btn-small btn-view"
+                                <button type="button" class="btn-small btn-preview"
                                     data-medicine-id="${escapeHtml(m.medicine_id)}"
-                                    data-delivery-id="${escapeHtml(m.delivery_id || '')}">
-                                    👁️ Pregled
-                                </button>
+                                    data-delivery-id="${escapeHtml(m.delivery_id || '')}">Pregled</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -337,9 +256,15 @@ async function loadMyInventory() {
             </table>
         `;
 
-        listDiv.querySelectorAll('.btn-view').forEach(btn => {
-            btn.addEventListener('click', () => {
-                viewMedicineDetails(btn.dataset.medicineId, btn.dataset.deliveryId || null);
+        listDiv.querySelectorAll('.btn-preview').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                try {
+                    const opts = { onVerify: verifyOnBlockchain };
+                    if (btn.dataset.deliveryId) opts.deliveryId = btn.dataset.deliveryId;
+                    await openMedicinePreview(btn.dataset.medicineId, currentSessionId, opts);
+                } catch (e) {
+                    alert(e.message);
+                }
             });
         });
     } catch (error) {

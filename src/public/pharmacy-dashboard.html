@@ -3,57 +3,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nadzorna Plošča Lekarne</title>
+    <title>Lekarna</title>
     <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="dashboard-page">
     <nav class="navbar">
         <div class="navbar-container">
-            <h1 class="navbar-title">💊 Nadzorna Plošča Lekarne</h1>
+            <h1 class="navbar-title">💊 Lekarna</h1>
             <div class="navbar-right">
-                <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
-                <button id="btn-back-home" class="btn-logout">Odjava</button>
+                <span id="wallet-status" class="wallet-status"></span>
+                <button id="btn-back-home" class="btn-logout" type="button">Odjava</button>
             </div>
         </div>
     </nav>
 
-    <main class="container dashboard-container">
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>1. Prihajajoče dostave (od distributorja)</h2>
-                <p>Sprejmite zdravila, ki jih je distributor poslal v vašo lekarno.</p>
-                <div id="incoming-deliveries-list" class="table-container">
-                    <p class="text-muted">Nalagam...</p>
-                </div>
-            </div>
+    <main class="container dashboard-layout">
+        <section id="medicine-detail-panel" class="detail-host" style="display:none;" aria-live="polite"></section>
+
+        <section class="dashboard-card">
+            <header class="card-header">
+                <h2>Prihajajoče dostave</h2>
+                <p class="card-desc">Od distributorja — najprej <strong>Pregled</strong>, nato <strong>Sprejmi</strong>.</p>
+            </header>
+            <div id="incoming-deliveries-list" class="card-body table-wrap"><p class="text-muted">Nalagam…</p></div>
         </section>
 
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>2. Moj inventar</h2>
-                <div id="my-inventory-list" class="table-container">
-                    <p class="text-muted">Nalagam...</p>
-                </div>
-            </div>
-        </section>
-
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>3. Pregled zdravila</h2>
-                <p>Kliknite "Pregled" pri dostavi za podrobnosti in preverjanje verige.</p>
-                <div id="medicine-visualizer" style="display:none; margin-top: 20px; padding: 20px; background: #f8f9fa; border: 2px solid #dee2e6; border-radius: 5px;">
-                    <div id="visualizer-content"></div>
-                </div>
-            </div>
+        <section class="dashboard-card">
+            <header class="card-header"><h2>Moj inventar</h2></header>
+            <div id="my-inventory-list" class="card-body table-wrap"><p class="text-muted">Nalagam…</p></div>
         </section>
     </main>
 
-    <footer class="footer">
-        <p>Nadzorna Plošča Lekarne | Sistem za Sledljivost Zdravil</p>
-    </footer>
-
+    <footer class="footer"><p>Lekarna · Sledljivost zdravil</p></footer>
     <script src="auth-utils.js"></script>
     <script src="shared-utils.js"></script>
+    <script src="dashboard-common.js"></script>
+    <script src="medicine-detail.js"></script>
     <script src="dashboard-pharmacy.js"></script>
 </body>
 </html>

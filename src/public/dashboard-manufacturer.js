@@ -367,31 +367,39 @@ async function loadMyMedicines() {
                         <th>ID</th>
                         <th>Zdravilo</th>
                         <th>Serijska</th>
-                        <th>Količina</th>
-                        <th>Na voljo</th>
+                        <th>Skupaj</th>
+                        <th>Na zalogi</th>
                         <th>Rok</th>
-                        <th>IPFS</th>
-                        <th>TX</th>
-                        <th>Status</th>
+                        <th>Zaloga / status</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
                     ${medicines.map(m => `
                         <tr>
-                            <td>${m.medicine_id || m.medicineId}</td>
+                            <td><code class="code-break">${(m.medicine_id || m.medicineId || '').slice(0, 14)}…</code></td>
                             <td>${m.name}</td>
                             <td>${m.batch_number}</td>
                             <td>${m.quantity}</td>
                             <td>${m.available_quantity ?? m.quantity}</td>
                             <td>${m.expiry_date ? formatDisplayDate(m.expiry_date) : '—'}</td>
-                            <td>${m.ipfs_hash ? `<a href="${getIpfsGatewayLinks(m.ipfs_hash).pinata}" target="_blank" rel="noopener" title="${m.ipfs_hash}">✓</a>` : '—'}</td>
-                            <td>${m.blockchain_tx_hash ? `<code title="${m.blockchain_tx_hash}">${m.blockchain_tx_hash.slice(0, 10)}…</code>` : '—'}</td>
-                            <td><span class="badge badge-info">${m.blockchain_status || 'MANUFACTURED'}</span></td>
+                            <td>${m.stock_status_label || formatManufacturerStockStatus(m)}</td>
+                            <td><button type="button" class="btn btn-sm btn-details" data-medicine-id="${m.medicine_id || m.medicineId}">Pregled</button></td>
                         </tr>
                     `).join('')}
                 </tbody>
             </table>
         `;
+
+        listDiv.querySelectorAll('.btn-details').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                try {
+                    await openMedicinePreview(btn.dataset.medicineId, currentSessionId);
+                } catch (e) {
+                    alert(e.message);
+                }
+            });
+        });
     } catch (error) {
         console.error('Error loading medicines:', error);
     }

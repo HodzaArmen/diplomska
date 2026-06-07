@@ -144,10 +144,9 @@ async function loadIncomingDeliveries() {
                             <td>${escapeHtml(d.batch_number)}</td>
                             <td>${d.quantity}</td>
                             <td>${formatDisplayDate(d.expiry_date)}</td>
-                            <td>
-                                <button class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">
-                                    ✓ Sprejmi
-                                </button>
+                            <td class="action-cell">
+                                <button type="button" class="btn-small btn-preview" data-medicine-id="${escapeHtml(d.medicine_id)}" data-delivery-id="${escapeHtml(d.delivery_id)}">Pregled</button>
+                                <button type="button" class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">Sprejmi</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -155,6 +154,15 @@ async function loadIncomingDeliveries() {
             </table>
         `;
 
+        listDiv.querySelectorAll('.btn-preview').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                try {
+                    await openMedicinePreview(btn.dataset.medicineId, currentSessionId, btn.dataset.deliveryId);
+                } catch (e) {
+                    alert(e.message);
+                }
+            });
+        });
         listDiv.querySelectorAll('.btn-receive').forEach(btn => {
             btn.addEventListener('click', () => receiveFromManufacturer(btn.dataset.deliveryId));
         });
@@ -177,7 +185,9 @@ async function receiveFromManufacturer(deliveryId) {
             throw new Error(data.error || 'Napaka pri sprejemu');
         }
 
-        alert('✓ Zdravilo sprejeto v inventar!');
+        let msg = data.message || 'Pošiljka sprejeta.';
+        if (data.verification) msg += '\n\n' + formatVerificationAlert(data.verification);
+        alert(msg);
         await loadIncomingDeliveries();
         await loadMyInventory();
     } catch (error) {
@@ -219,11 +229,12 @@ async function loadMyInventory() {
                             <td>${m.available_quantity} enot</td>
                             <td>${formatDisplayDate(m.expiry_date)}</td>
                             <td>
+                                <button type="button" class="btn-small btn-details" data-medicine-id="${escapeHtml(m.medicine_id)}">Pregled</button>
                                 <button class="btn-small btn-forward"
                                     data-medicine-id="${escapeHtml(m.medicine_id)}"
                                     data-medicine-name="${escapeHtml(m.name)}"
                                     data-quantity="${m.available_quantity}">
-                                    🚚 Pošlji v lekarno
+                                    🚚 Pošlji
                                 </button>
                             </td>
                         </tr>
@@ -239,6 +250,11 @@ async function loadMyInventory() {
                     btn.dataset.medicineName,
                     parseInt(btn.dataset.quantity, 10)
                 );
+            });
+        });
+        listDiv.querySelectorAll('.btn-details').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                try { await openMedicinePreview(btn.dataset.medicineId, currentSessionId); } catch (e) { alert(e.message); }
             });
         });
     } catch (error) {
@@ -346,6 +362,7 @@ async function loadOutgoingDeliveries() {
                         <th>Količina</th>
                         <th>Status</th>
                         <th>Datum</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -354,13 +371,19 @@ async function loadOutgoingDeliveries() {
                             <td>${escapeHtml(d.medicine_name)}</td>
                             <td>${escapeHtml(d.pharmacy_name)}</td>
                             <td>${d.quantity}</td>
-                            <td><span class="badge badge-info">${escapeHtml(d.status)}</span></td>
+                            <td>${renderStatusBadge(d.status)}</td>
                             <td>${formatDisplayDate(d.created_at)}</td>
+                            <td><button type="button" class="btn-small btn-details" data-medicine-id="${escapeHtml(d.medicine_id)}">Pregled</button></td>
                         </tr>
                     `).join('')}
                 </tbody>
             </table>
         `;
+        listDiv.querySelectorAll('.btn-details').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                try { await openMedicinePreview(btn.dataset.medicineId, currentSessionId); } catch (e) { alert(e.message); }
+            });
+        });
     } catch (error) {
         console.error('Error loading outgoing deliveries:', error);
         listDiv.innerHTML = '<p class="text-muted">Napaka pri nalaganju zgodovine.</p>';

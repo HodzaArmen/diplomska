@@ -3,66 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nadzorna Plošča Distributorja</title>
+    <title>Distributor</title>
     <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="dashboard-page">
     <nav class="navbar">
         <div class="navbar-container">
-            <h1 class="navbar-title">📦 Nadzorna Plošča Distributorja</h1>
+            <h1 class="navbar-title">📦 Distributor</h1>
             <div class="navbar-right">
-                <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
-                <button id="btn-back-home" class="btn-logout">Odjava</button>
+                <span id="wallet-status" class="wallet-status"></span>
+                <button id="btn-back-home" class="btn-logout" type="button">Odjava</button>
             </div>
         </div>
     </nav>
 
-    <main class="container dashboard-container">
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>1. Prihajajoče pošiljke (od proizvajalca)</h2>
-                <p>Sprejmite zdravila, ki jih je proizvajalec poslal distributorju.</p>
-                <div id="incoming-deliveries-list" class="table-container">
-                    <p class="text-muted">Nalagam...</p>
-                </div>
-            </div>
+    <main class="container dashboard-layout">
+        <section id="medicine-detail-panel" class="detail-host" style="display:none;" aria-live="polite"></section>
+
+        <section class="dashboard-card">
+            <header class="card-header">
+                <h2>Prihajajoče pošiljke</h2>
+                <p class="card-desc">Od proizvajalca — najprej <strong>Pregled</strong>, nato <strong>Sprejmi</strong>.</p>
+            </header>
+            <div id="incoming-deliveries-list" class="card-body table-wrap"><p class="text-muted">Nalagam…</p></div>
         </section>
 
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>2. Moj inventar</h2>
-                <p>Zdravila, ki jih imate na zalogi in jih lahko pošljete v lekarno.</p>
-                <div id="my-inventory-list" class="table-container">
-                    <p class="text-muted">Nalagam...</p>
-                </div>
-            </div>
+        <section class="dashboard-card">
+            <header class="card-header"><h2>Moj inventar</h2></header>
+            <div id="my-inventory-list" class="card-body table-wrap"><p class="text-muted">Nalagam…</p></div>
         </section>
 
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>3. Pošlji v lekarno</h2>
-                <div id="forward-medicine-panel">
-                    <p class="text-muted">Iz inventarja izberite zdravilo in kliknite "Pošlji v lekarno".</p>
-                </div>
-            </div>
+        <section class="dashboard-card">
+            <header class="card-header"><h2>Pošlji v lekarno</h2></header>
+            <div id="forward-medicine-panel" class="card-body"><p class="text-muted">Izberite zdravilo iz inventarja.</p></div>
         </section>
 
-        <section class="dashboard-section">
-            <div class="card">
-                <h2>Zgodovina pošiljk v lekarne</h2>
-                <div id="shipment-history-list" class="table-container">
-                    <p class="text-muted">Nalagam...</p>
-                </div>
-            </div>
+        <section class="dashboard-card">
+            <header class="card-header"><h2>Zgodovina pošiljk</h2></header>
+            <div id="shipment-history-list" class="card-body table-wrap"><p class="text-muted">Nalagam…</p></div>
         </section>
     </main>
 
-    <footer class="footer">
-        <p>Nadzorna Plošča Distributorja | Sistem za Sledljivost Zdravil</p>
-    </footer>
-
+    <footer class="footer"><p>Distributor · Sledljivost zdravil</p></footer>
     <script src="auth-utils.js"></script>
     <script src="shared-utils.js"></script>
+    <script src="dashboard-common.js"></script>
+    <script src="medicine-detail.js"></script>
     <script src="dashboard-distributor.js"></script>
 </body>
 </html>
