@@ -1061,3 +1061,20 @@ body.dashboard-page {
     color: var(--text-secondary);
     font-size: 0.875rem;
 }
+
+.detail-sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 0.5rem;
+}
+
+.detail-sources-note {
+    font-size: 0.8rem;
+    margin-bottom: 1rem;
+}
+
+.vc-verify-msg {
+    font-size: 0.8rem;
+    margin: 0.25rem 0 0.5rem;
+}
