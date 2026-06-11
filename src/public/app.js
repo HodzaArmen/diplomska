@@ -143,6 +143,14 @@ async function loginExistingUser() {
         currentUser = data.user;
         sessionStorage.setItem('sessionId', currentSessionId);
         sessionStorage.setItem('user', JSON.stringify(currentUser));
+        if (data.needsOnChainRegistration && window.BlockchainMetaMask) {
+            updateLoadingStatus('MetaMask (Sepolia)...');
+            await BlockchainMetaMask.ensureOnChainUser(
+                currentSessionId,
+                data.onChainRegistration?.did || currentUser.did,
+                data.onChainRegistration?.role || currentUser.role
+            );
+        }
         showLoading(false);
         redirectToRoleDashboard();
     } catch (e) {
@@ -190,6 +198,14 @@ async function completeRegistration() {
         currentUser = waltData.user;
         sessionStorage.setItem('sessionId', currentSessionId);
         sessionStorage.setItem('user', JSON.stringify(currentUser));
+        if (waltData.needsOnChainRegistration && window.BlockchainMetaMask) {
+            updateLoadingStatus('MetaMask (Sepolia)...');
+            await BlockchainMetaMask.ensureOnChainUser(
+                currentSessionId,
+                waltData.onChainRegistration?.did || currentUser.did,
+                waltData.onChainRegistration?.role || currentUser.role
+            );
+        }
         showLoading(false);
         redirectToRoleDashboard();
     } catch (e) {
