@@ -620,17 +620,29 @@ function decodeJwtPayload(jwt) {
     return JSON.parse(payload);
 }
 
-function structuralVerify(jwt, expectedIssuerDid) {
+function extractVcParties(jwt) {
     const payload = decodeJwtPayload(jwt);
     const vc = payload.vc || payload;
-    const issuer = vc?.issuer?.id || payload.iss;
-    const subject = vc?.credentialSubject || payload.credentialSubject;
+    return {
+        payload,
+        vc,
+        issuer: vc?.issuer?.id || payload.iss,
+        subject: vc?.credentialSubject || payload.credentialSubject
+    };
+}
 
-    const issuerOk = !expectedIssuerDid || 
-                     issuer === expectedIssuerDid || 
-                     subject?.id === expectedIssuerDid ||
-                     subject?.manufacturerDID === expectedIssuerDid ||
-                     subject?.distributorDID === expectedIssuerDid;
+function matchesExpectedIssuer({ issuer, subject }, expectedIssuerDid) {
+    if (!expectedIssuerDid) return true;
+    return issuer === expectedIssuerDid ||
+        subject?.id === expectedIssuerDid ||
+        subject?.manufacturerDID === expectedIssuerDid ||
+        subject?.distributorDID === expectedIssuerDid ||
+        subject?.creatorDID === expectedIssuerDid;
+}
+
+function structuralVerify(jwt, expectedIssuerDid) {
+    const { issuer, subject } = extractVcParties(jwt);
+    const issuerOk = matchesExpectedIssuer({ issuer, subject }, expectedIssuerDid);
 
     return {
         verified: Boolean(subject && issuerOk),
@@ -643,8 +655,148 @@ function structuralVerify(jwt, expectedIssuerDid) {
     };
 }
 
+const SUPPORTED_CREDENTIAL_TYPES = new Set([
+    'MedicineCredential',
+    'MedicineTransportCredential'
+]);
+
+function getCredentialTypeFromJwt(jwt) {
+    const payload = decodeJwtPayload(jwt);
+    const vc = payload.vc || payload;
+    const types = Array.isArray(vc?.type) ? vc.type : [];
+    const specific = types.find((type) => SUPPORTED_CREDENTIAL_TYPES.has(type));
+    if (specific) return specific;
+    if (jwt.includes('MedicineTransportCredential')) return 'MedicineTransportCredential';
+    return 'MedicineCredential';
+}
+
+function parseOid4vpAuthorizationUrl(authorizationUrl) {
+    const httpLike = String(authorizationUrl).replace(/^openid4vp:\/\/authorize\?/, 'http://local?');
+    const params = new URL(httpLike).searchParams;
+    const state = params.get('state');
+    const responseUri = params.get('response_uri');
+    const presentationDefinitionUri = params.get('presentation_definition_uri');
+
+    if (!state || !responseUri || !presentationDefinitionUri) {
+        throw new Error('OID4VP authorization URL ne vsebuje state/response_uri/presentation_definition_uri');
+    }
+
+    return { state, responseUri, presentationDefinitionUri };
+}
+
+function buildPresentationSubmission(presentationDefinition) {
+    const descriptor = presentationDefinition?.input_descriptors?.[0];
+    const descriptorId = descriptor?.id;
+    const definitionId = presentationDefinition?.id;
+
+    if (!descriptorId || !definitionId) {
+        throw new Error('Presentation definition nima input descriptorja');
+    }
+
+    return {
+        id: definitionId,
+        definition_id: definitionId,
+        descriptor_map: [{
+            id: descriptorId,
+            format: 'jwt_vp',
+            path: '$',
+            path_nested: {
+                id: descriptorId,
+                format: 'jwt_vc_json',
+                path: '$.verifiableCredential[0]'
+            }
+        }]
+    };
+}
+
+function policiesPassed(policyResults) {
+    const groups = policyResults?.results || [];
+    return groups.every((group) =>
+        (group.policyResults || []).every((policy) => policy.is_success === true)
+    );
+}
+
+async function initOid4vpVerificationSession(credentialType) {
+    const response = await axios.post(
+        `${VERIFIER_API}/openid4vc/verify`,
+        {
+            request_credentials: [
+                {
+                    type: credentialType,
+                    format: 'jwt_vc_json'
+                }
+            ]
+        },
+        {
+            headers: {
+                'Content-Type': 'application/json',
+                responseMode: 'direct_post',
+                authorizeBaseUrl: 'openid4vp://authorize'
+            },
+            timeout: 30000,
+            validateStatus: () => true
+        }
+    );
+
+    if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Verifier init ${response.status}: ${JSON.stringify(response.data)?.slice(0, 200)}`);
+    }
+
+    if (typeof response.data !== 'string' || !response.data.startsWith('openid4vp://')) {
+        throw new Error(`Verifier init ni vrnil OID4VP URL (prejel: ${JSON.stringify(response.data)?.slice(0, 120)})`);
+    }
+
+    const auth = parseOid4vpAuthorizationUrl(response.data);
+    const pdResponse = await axios.get(auth.presentationDefinitionUri, {
+        timeout: 15000,
+        validateStatus: () => true
+    });
+
+    if (pdResponse.status < 200 || pdResponse.status >= 300) {
+        throw new Error(`Branje presentation definition ni uspelo (${pdResponse.status})`);
+    }
+
+    return {
+        ...auth,
+        presentationDefinition: pdResponse.data
+    };
+}
+
+async function submitOid4vpPresentation({ responseUri, state, jwt, presentationDefinition }) {
+    const presentationSubmission = buildPresentationSubmission(presentationDefinition);
+    const form = new URLSearchParams({
+        vp_token: jwt,
+        presentation_submission: JSON.stringify(presentationSubmission),
+        state
+    });
+
+    const response = await axios.post(responseUri, form.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 30000,
+        validateStatus: () => true
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Verifier presentation submit ${response.status}: ${JSON.stringify(response.data)?.slice(0, 300)}`);
+    }
+}
+
+async function fetchOid4vpVerificationSession(state) {
+    const response = await axios.get(`${VERIFIER_API}/openid4vc/session/${state}`, {
+        timeout: 15000,
+        validateStatus: () => true
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Verifier session ${response.status}: ${JSON.stringify(response.data)?.slice(0, 200)}`);
+    }
+
+    return response.data;
+}
+
 /**
- * POPRAVLJENO: Prilagojeno za novejše različice Walt.id Verifier API (odstranjeni 404 endpointi)
+ * Preveri JWT VC prek uradnega Walt.id OID4VP toka:
+ * init seja → direct_post vp_token → GET /openid4vc/session/{state}
  */
 export async function verifyCredentialJwt(jwt, expectedIssuerDid = null) {
     if (!jwt || typeof jwt !== 'string') {
@@ -652,60 +804,46 @@ export async function verifyCredentialJwt(jwt, expectedIssuerDid = null) {
     }
 
     try {
-        const response = await axios.post(
-            `${VERIFIER_API}/openid4vc/verify`,
-            {
-                request_credentials: [
-                    {
-                        type: jwt.includes('MedicineTransport') ? 'MedicineTransportCredential' : 'MedicineCredential',
-                        format: 'jwt_vc_json'
-                    }
-                ],
-                vp_token: jwt,
-                presentationSubmission: {
-                    id: crypto.randomUUID(),
-                    definition_id: 'direct',
-                    descriptor_map: [{
-                        id: 'cred',
-                        format: 'jwt_vc_json',
-                        path: '$'
-                    }]
+        const credentialType = getCredentialTypeFromJwt(jwt);
+        const session = await initOid4vpVerificationSession(credentialType);
+        await submitOid4vpPresentation({
+            responseUri: session.responseUri,
+            state: session.state,
+            jwt,
+            presentationDefinition: session.presentationDefinition
+        });
+
+        const result = await fetchOid4vpVerificationSession(session.state);
+        const signatureOk = policiesPassed(result.policyResults);
+        const verified = result.verificationResult === true && signatureOk;
+
+        if (verified) {
+            const { issuer, subject } = extractVcParties(jwt);
+            const issuerOk = matchesExpectedIssuer({ issuer, subject }, expectedIssuerDid);
+
+            return {
+                verified: issuerOk,
+                structuralOnly: false,
+                issuer,
+                subject,
+                message: issuerOk
+                    ? 'VC kriptografsko preverjen prek Walt.id Verifier API (OID4VP)'
+                    : `Podpis veljaven, vendar udeleženec se ne ujema s pričakovanim DID (${expectedIssuerDid})`,
+                details: {
+                    sessionId: result.id,
+                    policyResults: result.policyResults
                 }
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    responseMode: 'direct_post',
-                    authorizeBaseUrl: 'openid4vp://authorize'
-                },
-                timeout: 30000,
-                validateStatus: () => true
-            }
-        );
-
-        if (response.status >= 200 && response.status < 300) {
-            // Novejše različice Walt.id verifierja vračajo "valid": true ali "success": true namesto "verificationResult"
-            const isValid = response.data?.valid === true || 
-                            response.data?.success === true || 
-                            response.data?.verified === true || 
-                            response.data?.verificationResult === true;
-
-            if (isValid) {
-                return {
-                    verified: true,
-                    message: 'VC kriptografsko preverjen prek Walt.id Verifier API',
-                    details: response.data
-                };
-            } else {
-                console.warn('Walt.id Verifier je vrnil 200 OK, vendar validacija politik ni uspela:', response.data);
-            }
+            };
         }
+
+        console.warn(
+            `Walt.id Verifier politike niso uspele (${credentialType}, state=${session.state}):`,
+            JSON.stringify(result.policyResults)?.slice(0, 500)
+        );
     } catch (error) {
-        console.log(`Verifier API direct verify error: ${error.message}`);
+        console.log(`Verifier API OID4VP verify error: ${error.message}`);
     }
 
-    // Odstranjeni klici na /jwt/verify in /openid4vc/policy/signature/verify, ker v novejših različicah vračajo 404.
-    // Če zgornja uradna validacija ne uspe (ali vrne false), se vrne zgolj strukturni fallback.
     return structuralVerify(jwt, expectedIssuerDid);
 }
 
