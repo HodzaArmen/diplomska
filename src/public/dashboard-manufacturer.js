@@ -41,6 +41,7 @@ async function initializeDashboard() {
 
         currentUser = JSON.parse(userJson);
         await refreshUserFromServer();
+        await tryEnsureOnChainUser(currentSessionId, currentUser);
 
         if (currentUser.role !== 'manufacturer') {
             alert('Dostop zavrnjen: Ta nadzorna plošča je samo za proizvajalce.');
@@ -252,6 +253,22 @@ async function createMedicine() {
         const medicine = data.medicine || data;
         const warnings = data.warnings || [];
 
+        if (data.needsBlockchain && medicine.ipfsHash && window.BlockchainMetaMask) {
+            try {
+                btn.textContent = '⏳ MetaMask (Sepolia)...';
+                const chainResult = await BlockchainMetaMask.signMedicineAndConfirm(
+                    currentSessionId,
+                    medicine.medicineId,
+                    medicine.ipfsHash
+                );
+                medicine.blockchainTxHash = chainResult.txHash;
+                medicine.blockchainStatus = 'MANUFACTURED';
+            } catch (chainErr) {
+                warnings.push(`Blockchain: ${chainErr.message}`);
+                showError('create-error', `VC/IPFS OK, blockchain ni uspel: ${chainErr.message}`);
+            }
+        }
+
         if (!medicine.ipfsHash) {
             const detail = medicine.ipfsError || warnings.join(' · ') || 'IPFS upload ni uspel';
             showError('create-error', `Zdravilo je v bazi, vendar brez IPFS: ${detail}. Preveri GET /api/system/status in src/.env (Pinata), nato docker compose restart app.`);
@@ -267,10 +284,9 @@ async function createMedicine() {
             successMsg += `<br>• IPFS: <a href="${links.ipfsIo}" target="_blank" rel="noopener">ipfs.io</a> | <a href="${links.pinata}" target="_blank" rel="noopener">Pinata</a> (${links.hash})`;
         }
         if (medicine.blockchainTxHash) {
-            const ex = medicine.blockchainExplorer?.tx;
-            successMsg += ex
-                ? `<br>• TX: <a href="${ex}" target="_blank" rel="noopener">Etherscan</a> <code>${medicine.blockchainTxHash.slice(0, 20)}…</code>`
-                : `<br>• TX: <code>${medicine.blockchainTxHash}</code>`;
+            const ex = medicine.blockchainExplorer?.tx
+                || `https://sepolia.etherscan.io/tx/${medicine.blockchainTxHash}`;
+            successMsg += `<br>• TX: <a href="${ex}" target="_blank" rel="noopener">Etherscan</a> <code>${medicine.blockchainTxHash.slice(0, 20)}…</code>`;
         }
         if (warnings.length && !data.fullyIntegrated) {
             successMsg += `<br><small>${warnings.join('<br>')}</small>`;
@@ -330,6 +346,15 @@ async function sendToDistributor() {
         const data = await response.json();
         if (!response.ok) {
             throw new Error(data.error || 'Napaka pri pošiljanju distributorju');
+        }
+
+        if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
+            btn.textContent = '⏳ MetaMask...';
+            await BlockchainMetaMask.signHandoffAndConfirm(
+                currentSessionId,
+                data.chainHandoff,
+                'SENT_TO_DISTRIBUTOR'
+            );
         }
 
         showSuccess('delivery-success', `✓ Poslano distributorju ${distributorMap[targetDistributor]}`);

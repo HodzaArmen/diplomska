@@ -40,6 +40,7 @@ async function initializeDashboard() {
                 sessionStorage.setItem('user', JSON.stringify(currentUser));
             }
         }
+        await tryEnsureOnChainUser(currentSessionId, currentUser);
 
         if (currentUser.role !== 'distributor') {
             alert('Dostop zavrnjen: Ta nadzorna plošča je samo za distributerje.');
@@ -185,6 +186,14 @@ async function receiveFromManufacturer(deliveryId) {
             throw new Error(data.error || 'Napaka pri sprejemu');
         }
 
+        if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
+            await BlockchainMetaMask.signHandoffAndConfirm(
+                currentSessionId,
+                data.chainHandoff,
+                'RECEIVED_BY_DISTRIBUTOR'
+            );
+        }
+
         let msg = data.message || 'Pošiljka sprejeta.';
         if (data.verification) msg += '\n\n' + formatVerificationAlert(data.verification);
         alert(msg);
@@ -327,6 +336,14 @@ async function forwardMedicineToPharmacy(medicineId) {
         const data = await response.json();
         if (!response.ok) {
             throw new Error(data.error || 'Napaka pri pošiljanju');
+        }
+
+        if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
+            await BlockchainMetaMask.signHandoffAndConfirm(
+                currentSessionId,
+                data.chainHandoff,
+                'FORWARDED_TO_PHARMACY'
+            );
         }
 
         successEl.textContent = `✓ Poslano v ${pharmacyMap[targetPharmacyWallet]}`;

@@ -76,6 +76,15 @@ async function openMedicinePreview(medicineId, sessionId, optsOrDeliveryId = nul
     return loadMedicineDetails(medicineId, sessionId, 'medicine-detail-panel', opts);
 }
 
+async function tryEnsureOnChainUser(sessionId, user) {
+    if (!window.BlockchainMetaMask || !user?.did || !user?.role) return;
+    try {
+        await BlockchainMetaMask.ensureOnChainUser(sessionId, user.did, user.role);
+    } catch (error) {
+        console.warn('On-chain registracija:', error.message);
+    }
+}
+
 function closeMedicineDetailPanel() {
     const panel = document.getElementById('medicine-detail-panel');
     if (panel) {

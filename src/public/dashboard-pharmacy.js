@@ -39,6 +39,7 @@ async function initializeDashboard() {
                 sessionStorage.setItem('user', JSON.stringify(currentUser));
             }
         }
+        await tryEnsureOnChainUser(currentSessionId, currentUser);
 
         if (currentUser.role !== 'pharmacy') {
             alert('Dostop zavrnjen: Ta nadzorna plošča je samo za lekarne.');
@@ -172,6 +173,14 @@ async function receiveDelivery(deliveryId) {
         const data = await response.json();
         if (!response.ok) {
             throw new Error(data.error || 'Napaka pri sprejemu dostave');
+        }
+
+        if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
+            await BlockchainMetaMask.signHandoffAndConfirm(
+                currentSessionId,
+                data.chainHandoff,
+                'RECEIVED_AT_PHARMACY'
+            );
         }
 
         let msg = data.message || 'Dostava sprejeta.';
