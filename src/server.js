@@ -55,7 +55,8 @@ import {
 } from './receive-gate.js';
 import {
     buildVcAssistantExplanation,
-    enhanceExplanationWithAi
+    enhanceExplanationWithAi,
+    getAiStatus
 } from './vc-assistant.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2966,16 +2967,25 @@ app.get('/api/medicines/:medicineId/vc-assistant', async (req, res) => {
             ai = await enhanceExplanationWithAi(explanation, medicine);
         }
 
+        const aiStatus = getAiStatus();
+
         res.json({
             success: true,
             explanation,
             ai,
+            aiStatus,
+            // backward compat
             openAiConfigured: Boolean(process.env.OPENAI_API_KEY)
         });
     } catch (error) {
         console.error('VC assistant error:', error.message);
         res.status(500).json({ error: error.message });
     }
+});
+
+// AI konfiguracija (brez izpostavitve ključev)
+app.get('/api/ai/status', (_req, res) => {
+    res.json({ success: true, ...getAiStatus() });
 });
 
 // 15. LOGIN — MetaMask denarnica + Walt.id email + geslo

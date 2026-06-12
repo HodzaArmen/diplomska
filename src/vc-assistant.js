@@ -1,10 +1,12 @@
 /**
  * vc-assistant.js — razlaga Verifiable Credentials v kontekstu zdravila
  * Privzeto: strukturirana rule-based razlaga (brez zunanjih API-jev).
- * Opcijsko: OPENAI_API_KEY za naravnojezikovno dopolnitev.
+ * Opcijsko: Groq / Gemini / OpenAI prek ai-provider.js
  */
 
-import axios from 'axios';
+import { generateAiText, getAiStatus } from './ai-provider.js';
+
+export { getAiStatus };
 
 const ROLE_LABELS = {
     manufacturer: 'proizvajalec',
@@ -207,62 +209,46 @@ export function buildVcAssistantExplanation(medicine, viewerRole, deliveryId = n
 }
 
 export async function enhanceExplanationWithAi(baseExplanation, medicine) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-        return { enhanced: false, reason: 'OPENAI_API_KEY ni nastavljen — uporabljena je rule-based razlaga.' };
-    }
-
-    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-    const systemPrompt = `Si strokovni asistent za farmacevtsko sledljivost in W3C Verifiable Credentials (SSI).
-Razloži podatke jasno v slovenščini, za ciljno publiko (proizvajalec/distributer/lekarna).
-Ne izmišljaj podatkov — uporabi samo kontekst. Omeni tveganja ponareka, če plast manjka.
-Bodi jedrnat (max 400 besed).`;
-
-    const userPrompt = `Zdravilo: ${medicine.name} (${medicine.medicineId})
-VC podpisano: ${medicine.vcSigned}
-Na verigi: ${Boolean(medicine.onChain?.medicine?.medicineId)}
-IPFS: ${medicine.ipfsHash || 'ni'}
-
-Strukturirana razlaga:
-${baseExplanation.fullText}
-
-Podaj kratko, razumljivo razlago za uporabnika sistema.`;
-
-    try {
-        const { data } = await axios.post(
-            'https://api.openai.com/v1/chat/completions',
-            {
-                model,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ],
-                temperature: 0.3,
-                max_tokens: 600
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 30000
-            }
-        );
-
-        const aiText = data?.choices?.[0]?.message?.content?.trim();
-        if (!aiText) {
-            return { enhanced: false, reason: 'OpenAI ni vrnil vsebine' };
-        }
-
-        return {
-            enhanced: true,
-            aiSummary: aiText,
-            model
-        };
-    } catch (error) {
+    const aiStatus = getAiStatus();
+    if (!aiStatus.configured) {
         return {
             enhanced: false,
-            reason: error.response?.data?.error?.message || error.message
+            reason: aiStatus.hint
         };
     }
+
+    const systemPrompt = `Si strokovni asistent za farmacevtsko sledljivost in W3C Verifiable Credentials (SSI).
+Razloži podatke jasno v slovenščini, za ciljno publiko (proizvajalec/distributer/lekarna).
+Ne izmišljaj podatkov — uporabi samo podani kontekst. Omeni tveganja ponareka, če katera plast manjka.
+Strukturiraj odgovor: 1) Kaj pomeni VC 2) Ali je zanesljivo 3) Kaj storiti naprej. Max 350 besed.`;
+
+    const userPrompt = `Zdravilo: ${medicine.name} (${medicine.medicineId})
+Serija: ${medicine.batchNumber}
+VC podpisano (Verifier): ${medicine.vcSigned ? 'da' : 'ne'}
+Na blockchainu: ${Boolean(medicine.onChain?.medicine?.medicineId) ? 'da' : 'ne'}
+IPFS CID: ${medicine.ipfsHash || 'ni'}
+Vloga uporabnika: ${baseExplanation.viewerRole}
+
+Strukturirana analiza sistema:
+${baseExplanation.fullText}
+
+Podaj razumljivo razlago za uporabnika dashboarda.`;
+
+    const result = await generateAiText({ systemPrompt, userPrompt });
+
+    if (!result.ok) {
+        return {
+            enhanced: false,
+            reason: result.error,
+            provider: result.provider
+        };
+    }
+
+    return {
+        enhanced: true,
+        aiSummary: result.text,
+        model: result.model,
+        provider: result.provider,
+        providerLabel: result.providerLabel
+    };
 }

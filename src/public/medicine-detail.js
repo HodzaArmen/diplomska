@@ -1,11 +1,18 @@
 /**
- * medicine-detail.js — pregled zdravila (vir: blockchain + Verifier API + IPFS)
+ * medicine-detail.js — pregled zdravila (zavihki: Pregled | Pot | Potrdila | Razlaga)
  */
 
 const ROLE_LABELS = {
     manufacturer: 'proizvajalec',
     distributor: 'distributer',
     pharmacy: 'lekarna'
+};
+
+const TRUST_LAYER_HELP = {
+    vc: 'Podpisano digitalno potrdilo o izvoru zdravila (Walt.id issuer).',
+    ipfs: 'Nespremenljivi metapodatki na decentralizirani shrambi (CID).',
+    chain: 'Zapis na pametni pogodbi — kdo je kdaj imel zdravilo.',
+    hash: 'IPFS identifikator se ujema s tistim na blockchainu.'
 };
 
 function escapeHtml(text) {
@@ -17,6 +24,11 @@ function escapeHtml(text) {
 
 function labelRole(role) {
     return ROLE_LABELS[role] || role || '—';
+}
+
+function truncateDid(did) {
+    if (!did || did.length < 48) return did || '—';
+    return `${did.slice(0, 18)}…${did.slice(-10)}`;
 }
 
 function sourceBadge(source, label) {
@@ -48,33 +60,103 @@ function journeyStepIcon(eventType) {
     return icons[eventType] || '🔗';
 }
 
-function renderVcBlock(claims, title, verified, opts = {}) {
-    const structural = opts.structuralOnly ? ' (strukturno)' : '';
-    const status = verified
-        ? `<span class="badge badge-success">Verifier API ✓</span>`
-        : `<span class="badge badge-warning">Ni preverjeno</span>`;
-    const msg = opts.message ? `<p class="text-muted vc-verify-msg">${escapeHtml(opts.message)}${structural}</p>` : '';
-    if (!claims) {
-        return `<div class="detail-block"><h5>${escapeHtml(title)} ${status}</h5>${msg}<p class="text-muted">Ni podatkov v credential.</p></div>`;
-    }
-    return `<div class="detail-block">
-        <h5>${escapeHtml(title)} ${status} ${sourceBadge('verifier-api', 'Walt.id Verifier')}</h5>
-        ${msg}
-        <div class="detail-kv-grid">
-            ${detailRow('Dogodek', claims.eventType)}
-            ${detailRow('Čas', claims.eventTimestamp ? formatDisplayDateTime(claims.eventTimestamp) : null)}
-            ${detailRow('Pošiljatelj', claims.senderName ? `${claims.senderName} (${labelRole(claims.senderRole)})` : claims.creatorName)}
-            ${detailRow('Prejemnik', claims.recipientName ? `${claims.recipientName} (${labelRole(claims.recipientRole)})` : null)}
-            ${detailRow('Količina', claims.quantity != null ? `${claims.quantity} enot` : null)}
-            ${detailRow('Serija', claims.batchNumber)}
-            ${detailRow('DID izdajatelja', claims.senderDID || claims.creatorDID || claims.manufacturerDID)}
+function dedupeTimeline(timeline) {
+    const seen = new Set();
+    return timeline.filter((h) => {
+        const key = `${h.action}|${h.deliveryId || ''}|${h.quantity || ''}|${h.timestamp || ''}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function buildTrustChecks(medicine) {
+    return [
+        { id: 'vc', ok: medicine.vcSigned, label: 'VC podpis', help: TRUST_LAYER_HELP.vc },
+        { id: 'ipfs', ok: Boolean(medicine.ipfsHash && medicine.ipfsVerification?.accessible), label: 'IPFS', help: TRUST_LAYER_HELP.ipfs },
+        { id: 'chain', ok: Boolean(medicine.onChain?.medicine?.medicineId), label: 'Veriga', help: TRUST_LAYER_HELP.chain },
+        { id: 'hash', ok: medicine.ipfsHashOnChain, label: 'Hash ✓', help: TRUST_LAYER_HELP.hash }
+    ];
+}
+
+function renderTrustStrip(medicine) {
+    const checks = buildTrustChecks(medicine);
+    const passed = checks.filter((c) => c.ok).length;
+    const level = passed === 4 ? 'high' : passed >= 2 ? 'mid' : 'low';
+    const levelLabel = passed === 4 ? 'Zanesljivo' : passed >= 2 ? 'Delno preverjeno' : 'Nezanesljivo';
+
+    return `<div class="detail-trust-strip detail-trust-strip--${level}">
+        <div class="detail-trust-strip-head">
+            <strong>${levelLabel}</strong>
+            <span class="text-muted">${passed}/4 plasti</span>
+        </div>
+        <div class="detail-trust-layers">
+            ${checks.map((c) => `
+                <div class="detail-trust-layer${c.ok ? ' detail-trust-layer--ok' : ''}" title="${escapeHtml(c.help)}">
+                    <span class="detail-trust-layer-icon">${c.ok ? '✓' : '✗'}</span>
+                    <span class="detail-trust-layer-label">${escapeHtml(c.label)}</span>
+                </div>
+            `).join('')}
         </div>
     </div>`;
+}
+
+function renderHumanOverview(medicine, highlightDelivery, chainNetwork) {
+    const onChain = medicine.onChain?.medicine;
+    const owner = medicine.onChain?.currentHolderLabel || onChain?.currentHolder || '—';
+    const status = onChain?.status || medicine.blockchainStatus || '—';
+
+    let lead = `Zdravilo <strong>${escapeHtml(medicine.name)}</strong> (serija ${escapeHtml(medicine.batchNumber)}) je proizvedlo <strong>${escapeHtml(medicine.manufacturerName || '—')}</strong>.`;
+
+    if (highlightDelivery) {
+        lead += ` Pregledujete pošiljko <strong>${highlightDelivery.quantity} en</strong> (${labelDeliveryStatus(highlightDelivery.status)}): ${labelRole(highlightDelivery.sourceRole)} → ${labelRole(highlightDelivery.targetRole)}.`;
+    } else if (onChain?.medicineId) {
+        lead += ` Trenutni lastnik na verigi (${escapeHtml(chainNetwork)}): <strong>${escapeHtml(owner)}</strong>, status <strong>${escapeHtml(status)}</strong>.`;
+    }
+
+    return `<p class="detail-overview-lead">${lead}</p>
+        <p class="detail-overview-note text-muted">Spodnji zavihki razdelijo podatke: <em>Pregled</em> (kaj vidite), <em>Pot dobave</em> (kronologija na verigi), <em>Potrdila</em> (VC podpisi), <em>Razlaga</em> (AI pomoč).</p>`;
+}
+
+function renderVcBlock(claims, title, verified, opts = {}) {
+    const status = verified
+        ? '<span class="vc-card-status vc-card-status--ok">Preverjeno</span>'
+        : '<span class="vc-card-status vc-card-status--warn">Ni preverjeno</span>';
+
+    if (!claims) {
+        return `<article class="vc-card vc-card--empty">
+            <header class="vc-card-head"><h5>${escapeHtml(title)}</h5>${status}</header>
+            <p class="text-muted">Potrdilo ni na voljo.</p>
+        </article>`;
+    }
+
+    const did = claims.senderDID || claims.creatorDID || claims.manufacturerDID;
+
+    return `<article class="vc-card">
+        <header class="vc-card-head">
+            <div>
+                <h5>${escapeHtml(title)}</h5>
+                <p class="vc-card-desc text-muted">Kdo je podpisal premik / izvor in kdaj.</p>
+            </div>
+            ${status}
+        </header>
+        <dl class="vc-card-dl">
+            <div><dt>Dogodek</dt><dd>${escapeHtml(claims.eventType || '—')}</dd></div>
+            <div><dt>Čas</dt><dd>${claims.eventTimestamp ? formatDisplayDateTime(claims.eventTimestamp) : '—'}</dd></div>
+            <div><dt>Pošiljatelj</dt><dd>${escapeHtml(claims.senderName || claims.creatorName || '—')}${claims.senderRole || claims.creatorRole ? ` (${labelRole(claims.senderRole || claims.creatorRole)})` : ''}</dd></div>
+            ${claims.recipientName ? `<div><dt>Prejemnik</dt><dd>${escapeHtml(claims.recipientName)} (${labelRole(claims.recipientRole)})</dd></div>` : ''}
+            ${claims.quantity != null ? `<div><dt>Količina</dt><dd>${claims.quantity} enot</dd></div>` : ''}
+            ${claims.batchNumber ? `<div><dt>Serija</dt><dd>${escapeHtml(claims.batchNumber)}</dd></div>` : ''}
+            ${did ? `<div><dt>DID</dt><dd><code class="code-break" title="${escapeHtml(did)}">${escapeHtml(truncateDid(did))}</code></dd></div>` : ''}
+        </dl>
+        ${verified ? '<p class="vc-card-foot text-muted">Walt.id Verifier je potrdil kriptografski podpis (OID4VP).</p>' : ''}
+    </article>`;
 }
 
 function renderAssistantMarkdown(text) {
     if (!text) return '';
     return escapeHtml(text)
+        .replace(/^## (.+)$/gm, '</p><h6 class="ai-md-h">$1</h6><p>')
         .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
         .replace(/`([^`]+)`/g, '<code class="code-break">$1</code>')
         .replace(/\n\n/g, '</p><p>')
@@ -83,9 +165,15 @@ function renderAssistantMarkdown(text) {
         .replace(/$/, '</p>');
 }
 
-function renderVcAssistantSections(sections) {
+function renderVcAssistantSections(sections, compact = false) {
     if (!sections?.length) return '<p class="text-muted">Ni razlage.</p>';
-    return sections.map((s) => {
+    const filtered = compact
+        ? sections.filter((s) =>
+            s.title === 'Povzetek'
+            || s.title === 'Skupna ocena zaupanja'
+            || s.title.startsWith('Priporočilo za'))
+        : sections;
+    return filtered.map((s) => {
         const statusCls = {
             veljavno: 'vc-assistant-section--ok',
             opozorilo: 'vc-assistant-section--warn',
@@ -101,8 +189,8 @@ function renderVcAssistantSections(sections) {
 
 async function loadVcAssistant(medicineId, sessionId, containerEl, opts = {}) {
     if (!containerEl) return;
-    containerEl.style.display = 'block';
-    containerEl.innerHTML = '<p class="text-muted">Analiziram VC…</p>';
+    containerEl.hidden = false;
+    containerEl.innerHTML = `<p class="detail-loading">${opts.enhanceAi ? 'AI pripravlja razlago…' : 'Pripravljam povzetek…'}</p>`;
 
     let url = `/api/medicines/${encodeURIComponent(medicineId)}/vc-assistant?sessionId=${encodeURIComponent(sessionId)}`;
     if (opts.deliveryId) url += `&deliveryId=${encodeURIComponent(opts.deliveryId)}`;
@@ -114,58 +202,75 @@ async function loadVcAssistant(medicineId, sessionId, containerEl, opts = {}) {
         if (!res.ok) throw new Error(data.error || 'Napaka');
 
         const exp = data.explanation;
-        let html = `<div class="vc-assistant-header">
-            <span class="badge badge-info">${escapeHtml(exp.mode)}</span>
-            ${data.openAiConfigured ? '<span class="badge badge-neutral">OpenAI na voljo</span>' : ''}
-        </div>`;
-        html += renderVcAssistantSections(exp.sections);
+        let html = '';
 
         if (data.ai?.enhanced && data.ai.aiSummary) {
-            html += `<article class="vc-assistant-section vc-assistant-section--ai">
-                <h5>🤖 AI povzetek (${escapeHtml(data.ai.model || 'OpenAI')})</h5>
-                <div class="vc-assistant-body">${renderAssistantMarkdown(data.ai.aiSummary)}</div>
-            </article>`;
-        } else if (opts.enhanceAi && data.ai && !data.ai.enhanced) {
-            html += `<p class="text-muted vc-assistant-ai-hint">${escapeHtml(data.ai.reason || 'AI ni na voljo')}</p>`;
+            html += `<div class="explain-ai-block">
+                <p class="explain-ai-label">🤖 ${escapeHtml(data.ai.providerLabel || 'AI')} · ${escapeHtml(data.ai.model || '')}</p>
+                <div class="vc-assistant-body explain-ai-text">${renderAssistantMarkdown(data.ai.aiSummary)}</div>
+            </div>`;
+        } else if (opts.enhanceAi) {
+            const hint = data.ai?.reason || data.aiStatus?.hint || 'AI ni na voljo.';
+            html += `<div class="vc-assistant-setup-hint"><p><strong>AI ni aktiven.</strong> ${escapeHtml(hint)}</p></div>`;
         }
 
-        containerEl.innerHTML = html;
+        if (!opts.enhanceAi || !data.ai?.enhanced) {
+            html += renderVcAssistantSections(exp.sections, true);
+        }
+
+        containerEl.innerHTML = html || '<p class="text-muted">Ni vsebine.</p>';
     } catch (e) {
         containerEl.innerHTML = `<p class="error-message">${escapeHtml(e.message)}</p>`;
     }
 }
 
-function renderJourneyStepper(timeline, chainNetwork) {
+function renderJourneyStepper(timeline, chainNetwork, compact = false) {
     if (!timeline.length) {
         return `<div class="detail-chain-card detail-chain-empty">
-            <p class="text-muted">Na blockchainu še ni handoff dogodkov za to zdravilo.</p>
-            <p class="text-muted">Po registraciji in pošiljanju bodo koraki prikazani tukaj.</p>
+            <p class="text-muted">Na verigi še ni zabeleženih premikov.</p>
         </div>`;
     }
 
     const steps = timeline.map((h, idx) => {
-        const qty = h.quantity ? `<span class="journey-qty">${h.quantity} en</span>` : '';
         const parties = [h.actorLabel, h.counterpartyLabel].filter(Boolean).join(' → ');
         const isLast = idx === timeline.length - 1;
+        const tech = compact ? '' : `
+            ${h.vcRef ? `<p class="journey-vcref">VC ref: <code>${escapeHtml(h.vcRef.slice(0, 12))}…</code></p>` : ''}
+            ${h.deliveryId ? `<p class="journey-delivery-id text-muted">Pošiljka: …${escapeHtml(h.deliveryId.slice(-8))}</p>` : ''}`;
+
         return `<li class="journey-step${isLast ? ' journey-step--last' : ''}">
-            <div class="journey-marker" aria-hidden="true">${journeyStepIcon(h.action)}</div>
+            <div class="journey-marker">${journeyStepIcon(h.action)}</div>
             <div class="journey-body">
-                <div class="journey-title-row">
-                    <strong class="journey-title">${escapeHtml(h.actionLabel || h.action)}</strong>
-                    ${sourceBadge('blockchain', chainNetwork)}
-                </div>
-                <p class="journey-parties">${qty}${qty && parties ? ' · ' : ''}${escapeHtml(parties)}</p>
+                <strong class="journey-title">${escapeHtml(h.actionLabel || h.action)}</strong>
+                <p class="journey-parties">${h.quantity ? `${h.quantity} en · ` : ''}${escapeHtml(parties)}</p>
                 <p class="journey-time">${formatDisplayDateTime(h.timestamp)}</p>
-                ${h.vcRef ? `<p class="journey-vcref">VC ref (SHA-256): <code class="code-break">${escapeHtml(h.vcRef.slice(0, 16))}…</code></p>` : ''}
-                ${h.deliveryId ? `<p class="journey-delivery-id text-muted">Pošiljka: <code>${escapeHtml(h.deliveryId.slice(-12))}</code></p>` : ''}
+                ${tech}
             </div>
         </li>`;
     }).join('');
 
-    return `<div class="detail-chain-card">
-        <p class="detail-chain-lead">Koraki dobavne verige — <strong>vir: blockchain</strong> (ne baza podatkov)</p>
-        <ol class="journey-stepper">${steps}</ol>
-    </div>`;
+    return `<p class="detail-tab-intro text-muted">Kronološki zapisi iz pametne pogodbe <strong>${escapeHtml(chainNetwork)}</strong> — uradna pot lastništva (ne PostgreSQL).</p>
+        <ol class="journey-stepper">${steps}</ol>`;
+}
+
+function setupDetailTabs(panelEl) {
+    const tabs = panelEl.querySelectorAll('.detail-tab');
+    const panels = panelEl.querySelectorAll('.detail-tab-panel');
+
+    tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+            const id = tab.dataset.tab;
+            tabs.forEach((t) => {
+                t.classList.toggle('detail-tab--active', t.dataset.tab === id);
+                t.setAttribute('aria-selected', t.dataset.tab === id ? 'true' : 'false');
+            });
+            panels.forEach((p) => {
+                const active = p.dataset.panel === id;
+                p.hidden = !active;
+                p.classList.toggle('detail-tab-panel--active', active);
+            });
+        });
+    });
 }
 
 function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
@@ -178,12 +283,14 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
     const stockText = medicine.stockStatusLabel || (recv !== total ? `${recv} / ${total} enot` : `${recv} enot`);
 
     let deliveries = medicine.deliveries || [];
-    let timeline = medicine.supplyChainHistory || [];
+    let timeline = dedupeTimeline(medicine.supplyChainHistory || []);
+
     if (opts.deliveryId) {
         deliveries = deliveries.filter((d) => d.deliveryId === opts.deliveryId);
-        timeline = timeline.filter((h) =>
-            !h.deliveryId || h.deliveryId === opts.deliveryId || h.action === 'MANUFACTURED' || h.action === 'manufactured'
-        );
+        timeline = dedupeTimeline(timeline.filter((h) =>
+            !h.deliveryId || h.deliveryId === opts.deliveryId
+            || h.action === 'MANUFACTURED' || h.action === 'manufactured'
+        ));
     }
 
     const highlightDelivery = opts.deliveryId
@@ -191,153 +298,108 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
         : null;
 
     const chainNetwork = medicine.dataSources?.chainNetwork || 'Blockchain';
-    const ds = medicine.dataSources || {};
     const onChain = medicine.onChain?.medicine;
-    const hasChain = Boolean(onChain?.medicineId || timeline.length > 0);
     const chainStatus = onChain?.status || medicine.blockchainStatus || '—';
-    const vcOk = medicine.vcSigned;
-    const ipfsOkBanner = Boolean(medicine.ipfsHash);
+    const ipfsOk = medicine.ipfsVerification?.accessible;
 
-    let trustBanner;
-    if (hasChain) {
-        trustBanner = `<div class="detail-trust-banner detail-trust-banner--chain">
-            <span class="detail-trust-icon">⛓</span>
-            <div>
-                <strong>Podatki s blockchaina (${escapeHtml(chainNetwork)})</strong>
-                <p>Pot dobave, lastništvo in IPFS hash iz smart contract zapisa. PostgreSQL je le operativni indeks.</p>
-            </div>
+    const overviewFacts = `
+        <div class="detail-facts-grid">
+            ${detailRow('Proizvajalec', escapeHtml(medicine.manufacturerName || '—'))}
+            ${detailRow('Serija', escapeHtml(medicine.batchNumber))}
+            ${detailRow('Rok uporabe', formatDisplayDate(medicine.expiryDate))}
+            ${detailRow('Zaloga / količina', escapeHtml(stockText))}
+            ${onChain ? detailRow('Lastnik (veriga)', escapeHtml(medicine.onChain?.currentHolderLabel || onChain.currentHolder || '—')) : ''}
+            ${onChain ? detailRow('Status', `<span class="chain-status-pill">${escapeHtml(chainStatus)}</span>`) : ''}
         </div>`;
-    } else if (vcOk && ipfsOkBanner) {
-        trustBanner = `<div class="detail-trust-banner detail-trust-banner--warn">
-            <span class="detail-trust-icon">⚠</span>
-            <div>
-                <strong>VC in IPFS OK — blockchain še ni potrjen</strong>
-                <p>Backend še ni zapisal <code>registerMedicine</code> na verigo (preverite deploy pogodbe ali ponovno ustvarite zdravilo). Dokler zapisa ni, distributer ne more sprejeti pošiljke.</p>
-            </div>
-        </div>`;
-    } else {
-        trustBanner = `<div class="detail-trust-banner detail-trust-banner--warn">
-            <span class="detail-trust-icon">⚠</span>
-            <div>
-                <strong>Zdravilo še ni na verigi</strong>
-                <p>Registracija na blockchainu poteka avtomatsko ob ustvarjanju zdravila. Preverite, ali je smart contract deployan.</p>
-            </div>
-        </div>`;
-    }
-
-    const deliveryFocus = highlightDelivery
-        ? `<div class="detail-focus-box">
-            <span class="detail-focus-label">Pregledujete pošiljko</span>
-            <strong>${highlightDelivery.quantity} en</strong>
-            <span>${labelDeliveryStatus(highlightDelivery.status)}</span>
-            <span class="text-muted">${labelRole(highlightDelivery.sourceRole)} → ${labelRole(highlightDelivery.targetRole)}</span>
-        </div>`
-        : '';
 
     const deliveriesHtml = deliveries.length === 0
-        ? '<p class="text-muted">Ni pošiljk v operativnem indeksu.</p>'
-        : `<div class="detail-deliveries">${deliveries.map((d) => {
-            const hl = d.deliveryId === opts.deliveryId ? ' delivery-highlight' : '';
-            const vcTag = d.transportVcVerified ? ' · Verifier ✓' : (d.transportVcSigned ? ' · VC' : '');
-            const chainTag = d.onChain ? ' · On-chain ✓' : '';
-            return `<div class="delivery-chip${hl}">
-                <strong>${labelDeliveryStatus(d.status)}</strong>
-                ${d.quantity} en · ${escapeHtml(labelRole(d.sourceRole))} → ${escapeHtml(labelRole(d.targetRole))}
-                ${vcTag}${chainTag}
-                <span class="text-muted delivery-chip-note">Indeks (DB) — pot dobave je zgoraj na verigi</span>
-            </div>`;
-        }).join('')}</div>`;
+        ? '<p class="text-muted">Ni pošiljk v aplikaciji.</p>'
+        : deliveries.map((d) => `
+            <div class="delivery-chip${d.deliveryId === opts.deliveryId ? ' delivery-highlight' : ''}">
+                <strong>${labelDeliveryStatus(d.status)}</strong> · ${d.quantity} en
+                <span class="text-muted">${labelRole(d.sourceRole)} → ${labelRole(d.targetRole)}</span>
+            </div>`).join('');
 
-    const ipfsOk = medicine.ipfsVerification?.accessible;
     const ipfsBlock = medicine.ipfsHash
         ? `${renderIpfsLinksHtml(medicine.ipfsHash)}
-           <p>${ipfsOk ? sourceBadge('ipfs-gateway', 'IPFS dostopen') : sourceBadge('none', 'IPFS ni dostopen')}</p>
-           ${medicine.ipfsHashOnChain ? `<p class="text-muted">${sourceBadge('ipfs-via-blockchain', 'Hash potrjen na verigi')}</p>` : ''}`
-        : '<p class="text-muted">Ni IPFS zapisa na verigi.</p>';
-
-    const chainBlock = onChain
-        ? `<div class="detail-chain-state">
-            ${detailRow('Status na verigi', `<span class="chain-status-pill">${escapeHtml(chainStatus)}</span>`)}
-            ${detailRow('Trenutni lastnik', medicine.onChain.currentHolderLabel || onChain.currentHolder)}
-            ${detailRow('DID lastnika', onChain.currentHolderDID)}
-            ${renderBlockchainExplorerHtml(medicine)}
-           </div>`
-        : '<p class="text-muted">Zdravilo ni na blockchainu.</p>';
+           <p class="detail-tech-meta">${ipfsOk ? '✓ Dostopen' : '✗ Nedosegljiv'}${medicine.ipfsHashOnChain ? ' · hash na verigi' : ''}</p>`
+        : '<p class="text-muted">Ni IPFS zapisa.</p>';
 
     el.innerHTML = `
         <div class="medicine-detail-panel dashboard-card">
-            <div class="detail-header">
+            <header class="detail-header">
                 <div>
                     <h3>${escapeHtml(medicine.name)}</h3>
-                    <p class="text-muted">Serija ${escapeHtml(medicine.batchNumber)} · ${stockText}</p>
-                    ${hasChain ? `<p class="detail-chain-status">${sourceBadge('blockchain', chainNetwork)} ${escapeHtml(chainStatus)}</p>` : ''}
+                    <p class="detail-header-sub">Serija ${escapeHtml(medicine.batchNumber)} · ${escapeHtml(stockText)}</p>
                 </div>
                 <button type="button" class="btn btn-ghost btn-close-detail" aria-label="Zapri">✕</button>
-            </div>
+            </header>
 
-            ${trustBanner}
-            ${deliveryFocus}
+            ${renderTrustStrip(medicine)}
 
-            <section class="detail-section vc-assistant-wrap">
-                <div class="vc-assistant-toolbar">
-                    <h4 class="detail-section-title">AI asistent — razlaga VC</h4>
-                    <div class="vc-assistant-actions">
-                        <button type="button" class="btn btn-secondary btn-sm btn-vc-assistant">Razloži VC</button>
-                        <button type="button" class="btn btn-ghost btn-sm btn-vc-assistant-ai" title="Zahteva OPENAI_API_KEY">+ AI povzetek</button>
+            <nav class="detail-tabs" role="tablist" aria-label="Pregled zdravila">
+                <button type="button" class="detail-tab detail-tab--active" data-tab="overview" role="tab" aria-selected="true">Pregled</button>
+                <button type="button" class="detail-tab" data-tab="journey" role="tab" aria-selected="false">Pot dobave</button>
+                <button type="button" class="detail-tab" data-tab="credentials" role="tab" aria-selected="false">Potrdila (VC)</button>
+                <button type="button" class="detail-tab" data-tab="explain" role="tab" aria-selected="false">Razlaga</button>
+            </nav>
+
+            <div class="detail-tab-panels">
+                <section class="detail-tab-panel detail-tab-panel--active" data-panel="overview" role="tabpanel">
+                    ${renderHumanOverview(medicine, highlightDelivery, chainNetwork)}
+                    ${overviewFacts}
+                    ${highlightDelivery ? `<div class="detail-focus-box">
+                        <span class="detail-focus-label">Izbrana pošiljka</span>
+                        <strong>${highlightDelivery.quantity} en</strong> · ${labelDeliveryStatus(highlightDelivery.status)}
+                        <span class="text-muted">${labelRole(highlightDelivery.sourceRole)} → ${labelRole(highlightDelivery.targetRole)}</span>
+                    </div>` : ''}
+                    <details class="detail-accordion detail-accordion--tech">
+                        <summary>Tehnični podatki (ID, IPFS, veriga)</summary>
+                        <div class="detail-tech-block">
+                            ${detailRow('ID zdravila', `<code class="code-break">${escapeHtml(medicine.medicineId)}</code>`)}
+                            ${detailRow('IPFS', ipfsBlock)}
+                            ${onChain && onChain.currentHolderDID ? detailRow('DID lastnika', `<code class="code-break" title="${escapeHtml(onChain.currentHolderDID)}">${escapeHtml(truncateDid(onChain.currentHolderDID))}</code>`) : ''}
+                            ${renderBlockchainExplorerHtml(medicine)}
+                        </div>
+                    </details>
+                    <details class="detail-accordion">
+                        <summary>Pošiljke v aplikaciji (${deliveries.length})</summary>
+                        <p class="detail-accordion-hint text-muted">Operativni indeks (PostgreSQL) — za dokazilo porekla uporabite zavihek Pot dobave.</p>
+                        ${deliveriesHtml}
+                    </details>
+                </section>
+
+                <section class="detail-tab-panel" data-panel="journey" role="tabpanel" hidden>
+                    ${renderJourneyStepper(timeline, chainNetwork, true)}
+                </section>
+
+                <section class="detail-tab-panel" data-panel="credentials" role="tabpanel" hidden>
+                    <p class="detail-tab-intro text-muted"><strong>Verifiable Credentials</strong> so podpisana digitalna potrdila. Proizvajalec izda potrdilo o zdravilu, ob vsakem premiku nastane transportno potrdilo.</p>
+                    ${renderVcBlock(medicine.medicineVcClaims, 'Potrdilo o zdravilu (proizvajalec)', medicine.vcSigned)}
+                    ${deliveries.filter((d) => d.transportVcClaims || d.transportVcSigned).map((d) =>
+                        renderVcBlock(
+                            d.transportVcClaims,
+                            `Transportno potrdilo — ${labelDeliveryStatus(d.status)}`,
+                            d.transportVcVerified
+                        )
+                    ).join('')}
+                </section>
+
+                <section class="detail-tab-panel" data-panel="explain" role="tabpanel" hidden>
+                    <p class="detail-tab-intro text-muted">Pomoč pri razumevanju podatkov — najprej kratek povzetek, z <strong>AI razlago</strong> dobite naravni jezik (Groq).</p>
+                    <div class="explain-actions">
+                        <button type="button" class="btn btn-secondary btn-sm btn-vc-assistant">Kratek povzetek</button>
+                        <button type="button" class="btn btn-primary btn-sm btn-vc-assistant-ai">🤖 AI razlaga</button>
                     </div>
-                </div>
-                <p class="text-muted vc-assistant-lead">Pregled Verifiable Credentials v kontekstu tega zdravila, verige in vaše vloge.</p>
-                <div class="vc-assistant-output" style="display:none;" aria-live="polite"></div>
-            </section>
-
-            <section class="detail-section detail-section--primary">
-                <h4 class="detail-section-title">Pot dobave</h4>
-                ${renderJourneyStepper(timeline, chainNetwork)}
-            </section>
-
-            <div class="detail-cards-row">
-                <section class="detail-section detail-section--chain">
-                    <h4 class="detail-section-title">Stanje na verigi ${sourceBadge('blockchain', chainNetwork)}</h4>
-                    ${chainBlock}
-                </section>
-                <section class="detail-section">
-                    <h4 class="detail-section-title">IPFS ${medicine.ipfsHashOnChain ? sourceBadge('ipfs-via-blockchain', 'z verige') : ''}</h4>
-                    ${ipfsBlock}
+                    <div class="vc-assistant-output" hidden aria-live="polite"></div>
                 </section>
             </div>
 
-            <div class="detail-summary detail-summary--compact">
-                ${detailRow('ID zdravila', `<code class="code-break">${escapeHtml(medicine.medicineId)}</code>`)}
-                ${detailRow('Proizvajalec', medicine.manufacturerName)}
-                ${detailRow('Rok uporabe', formatDisplayDate(medicine.expiryDate))}
-            </div>
-
-            <details class="detail-accordion">
-                <summary>Verifiable Credentials — Walt.id Verifier</summary>
-                <p class="text-muted detail-accordion-hint">Kriptografsko preverjanje podpisov (OID4VP). Dopolnjuje blockchain zapis.</p>
-                ${renderVcBlock(medicine.medicineVcClaims, 'VC zdravila (proizvajalec)', medicine.vcSigned, {
-                    structuralOnly: medicine.vcStructuralOnly,
-                    message: medicine.vcVerificationMessage
-                })}
-                ${deliveries.filter((d) => d.transportVcClaims || d.transportVcSigned).map((d) =>
-                    renderVcBlock(
-                        d.transportVcClaims,
-                        `VC pošiljke — ${labelDeliveryStatus(d.status)}`,
-                        d.transportVcVerified,
-                        { message: d.transportVcMessage, structuralOnly: d.transportVcStructuralOnly }
-                    )
-                ).join('')}
-            </details>
-
-            <details class="detail-accordion">
-                <summary>Operativni indeks pošiljk (${deliveries.length}) ${sourceBadge('postgres-inbox-only', 'PostgreSQL')}</summary>
-                <p class="text-muted detail-accordion-hint">Samo za inbox / status v aplikaciji. Za dokazilo o poreklu uporabite pot dobave zgoraj.</p>
-                ${deliveriesHtml}
-            </details>
-
-            ${opts.onVerify ? '<button type="button" class="btn btn-secondary btn-verify-detail">Preveri VC + blockchain</button>' : ''}
+            ${opts.onVerify ? '<footer class="detail-footer"><button type="button" class="btn btn-secondary btn-verify-detail">Preveri VC + blockchain</button></footer>' : ''}
         </div>
     `;
+
+    setupDetailTabs(el.querySelector('.medicine-detail-panel'));
 
     el.querySelector('.btn-close-detail')?.addEventListener('click', closeMedicineDetailPanel);
     el.querySelector('.btn-verify-detail')?.addEventListener('click', () => opts.onVerify(medicine.medicineId));

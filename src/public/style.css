@@ -1079,7 +1079,282 @@ body.dashboard-page {
     margin: 0.25rem 0 0.5rem;
 }
 
-/* ===== MEDICINE DETAIL — UX v2 ===== */
+/* ===== MEDICINE DETAIL — UX v3 (zavihki) ===== */
+.detail-header-sub {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.detail-trust-strip {
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius);
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.detail-trust-strip--high { background: #ecfdf5; }
+.detail-trust-strip--mid { background: #fffbeb; }
+.detail-trust-strip--low { background: #fef2f2; }
+
+.detail-trust-strip-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    font-size: 0.88rem;
+}
+
+.detail-trust-layers {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.35rem;
+}
+
+.detail-trust-layer {
+    text-align: center;
+    padding: 0.4rem 0.25rem;
+    background: rgba(255, 255, 255, 0.65);
+    border-radius: 6px;
+    font-size: 0.72rem;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.detail-trust-layer--ok {
+    border-color: #6ee7b7;
+    background: #fff;
+}
+
+.detail-trust-layer-icon {
+    display: block;
+    font-weight: 700;
+    font-size: 0.85rem;
+}
+
+.detail-trust-layer-label {
+    color: var(--text-secondary);
+}
+
+.detail-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border-color);
+    background: #f8fafc;
+    overflow-x: auto;
+}
+
+.detail-tab {
+    flex: 1;
+    min-width: 0;
+    padding: 0.65rem 0.5rem;
+    border: none;
+    background: transparent;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+}
+
+.detail-tab:hover {
+    color: var(--primary-color);
+    background: rgba(37, 99, 235, 0.04);
+}
+
+.detail-tab--active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+    background: #fff;
+}
+
+.detail-tab-panels {
+    padding: 1rem 1.1rem 1.1rem;
+}
+
+.detail-tab-panel[hidden] {
+    display: none !important;
+}
+
+.detail-tab-intro {
+    font-size: 0.85rem;
+    margin: 0 0 1rem;
+    line-height: 1.5;
+}
+
+.detail-overview-lead {
+    font-size: 0.95rem;
+    line-height: 1.55;
+    margin: 0 0 0.5rem;
+}
+
+.detail-overview-note {
+    font-size: 0.8rem;
+    margin: 0 0 1rem;
+    line-height: 1.45;
+}
+
+.detail-facts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 0.65rem 1rem;
+    padding: 0.85rem 1rem;
+    background: #f8fafc;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+}
+
+.detail-loading {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    padding: 1rem 0;
+}
+
+.detail-tech-block {
+    padding-top: 0.5rem;
+}
+
+.detail-tech-meta {
+    font-size: 0.8rem;
+    margin-top: 0.35rem;
+}
+
+.detail-accordion--tech {
+    margin-top: 0.75rem;
+}
+
+.detail-footer {
+    padding: 0.75rem 1.1rem 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+/* VC cards (zavihek Potrdila) */
+.vc-card {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+    background: #fff;
+}
+
+.vc-card--empty {
+    background: #f8fafc;
+}
+
+.vc-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-bottom: 0.65rem;
+}
+
+.vc-card-head h5 {
+    margin: 0;
+    font-size: 0.92rem;
+}
+
+.vc-card-desc {
+    font-size: 0.78rem;
+    margin: 0.15rem 0 0;
+}
+
+.vc-card-status {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    flex-shrink: 0;
+}
+
+.vc-card-status--ok {
+    background: #d1fae5;
+    color: #047857;
+}
+
+.vc-card-status--warn {
+    background: #fef3c7;
+    color: #b45309;
+}
+
+.vc-card-dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.5rem 1rem;
+    margin: 0;
+}
+
+.vc-card-dl > div {
+    min-width: 0;
+}
+
+.vc-card-dl dt {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 0.1rem;
+}
+
+.vc-card-dl dd {
+    margin: 0;
+    font-size: 0.88rem;
+}
+
+.vc-card-foot {
+    font-size: 0.78rem;
+    margin: 0.65rem 0 0;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border-color);
+}
+
+/* Zavihek Razlaga */
+.explain-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.explain-ai-block {
+    background: linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%);
+    border: 1px solid #ddd6fe;
+    border-radius: var(--radius);
+    padding: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.explain-ai-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #6d28d9;
+    margin: 0 0 0.5rem;
+}
+
+.explain-ai-text {
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.explain-ai-text .ai-md-h {
+    font-size: 0.88rem;
+    margin: 0.75rem 0 0.35rem;
+    color: var(--text-primary);
+}
+
+@media (max-width: 520px) {
+    .detail-trust-layers {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .detail-tab {
+        font-size: 0.72rem;
+        padding: 0.55rem 0.35rem;
+    }
+}
+
+/* legacy banners (ohranjeno za združljivost) */
 .detail-trust-banner {
     display: flex;
     gap: 0.75rem;
@@ -1793,8 +2068,8 @@ body.profile-open {
 
 /* ===== VC ASSISTANT ===== */
 .vc-assistant-wrap {
-    background: linear-gradient(135deg, #f0f9ff 0%, #f8fafc 100%);
-    border: 1px solid #bae6fd;
+    background: #f8fafc;
+    border: 1px solid var(--border-color);
     border-radius: var(--radius);
     padding: 1rem;
     margin-bottom: 1rem;
@@ -1876,4 +2151,30 @@ body.profile-open {
 .vc-assistant-ai-hint {
     font-size: 0.8rem;
     margin-top: 0.5rem;
+}
+
+.vc-assistant-setup-hint {
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: var(--radius);
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.85rem;
+}
+
+.vc-assistant-setup-hint p {
+    margin: 0 0 0.5rem;
+}
+
+.vc-assistant-setup-steps {
+    margin: 0.5rem 0 0 1.1rem;
+    padding: 0;
+    line-height: 1.6;
+}
+
+.vc-assistant-setup-steps code {
+    font-size: 0.78rem;
+    background: #fef3c7;
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
 }
