@@ -103,18 +103,28 @@ async function verifyVcRecord(jwt, expectedIssuerDid, credentialType) {
     };
 }
 
-function chainHandoffToTimelineEvent(h, walletMap) {
+function chainHandoffToTimelineEvent(h, walletMap, deliveryQtyMap = null) {
+    const isReceive = h.eventType === 'RECEIVED_BY_DISTRIBUTOR' || h.eventType === 'RECEIVED_AT_PHARMACY';
+    let quantity = h.quantity || null;
+    if (h.deliveryId && deliveryQtyMap?.has(h.deliveryId)) {
+        quantity = deliveryQtyMap.get(h.deliveryId);
+    }
+    const actor = isReceive ? h.counterparty : h.actor;
+    const counterparty = isReceive ? h.actor : h.counterparty;
+    const actorDID = isReceive ? h.counterpartyDID : h.actorDID;
+    const counterpartyDID = isReceive ? h.actorDID : h.counterpartyDID;
+
     return {
         action: h.eventType,
         actionLabel: CHAIN_EVENT_LABELS[h.eventType] || h.eventType,
-        actor: h.actor,
-        actorLabel: walletLabel(walletMap, h.actor),
-        actorDID: h.actorDID,
-        counterparty: h.counterparty,
-        counterpartyLabel: walletLabel(walletMap, h.counterparty),
-        counterpartyDID: h.counterpartyDID,
+        actor,
+        actorLabel: walletLabel(walletMap, actor),
+        actorDID,
+        counterparty,
+        counterpartyLabel: walletLabel(walletMap, counterparty),
+        counterpartyDID,
         deliveryId: h.deliveryId || null,
-        quantity: h.quantity || null,
+        quantity,
         timestamp: h.timestamp ? new Date(h.timestamp * 1000).toISOString() : null,
         vcRef: h.vcRef || null,
         source: 'blockchain'
@@ -226,7 +236,12 @@ export async function buildVerifiedMedicineView({
     ];
     const walletMap = await loadWalletLabelMap(pool, walletsToResolve);
 
-    const chainTimeline = chainHandoffs.map((h) => chainHandoffToTimelineEvent(h, walletMap));
+    const deliveryQtyMap = new Map(
+        dbDeliveries
+            .filter((d) => d.delivery_id && d.quantity != null)
+            .map((d) => [d.delivery_id, Number(d.quantity)])
+    );
+    const chainTimeline = chainHandoffs.map((h) => chainHandoffToTimelineEvent(h, walletMap, deliveryQtyMap));
 
     const verifiedDeliveries = [];
     for (const d of dbDeliveries) {
@@ -267,9 +282,25 @@ export async function buildVerifiedMedicineView({
         .filter((d) => d.source_role === 'manufacturer')
         .reduce((s, d) => s + (d.quantity || 0), 0);
     const pendingQty = verifiedDeliveries.filter((d) => d.status === 'PENDING').reduce((s, d) => s + d.quantity, 0);
+    const receivedAtDist = dbDeliveries
+        .filter((d) => d.source_role === 'manufacturer' && d.status === 'RECEIVED')
+        .reduce((s, d) => s + (d.quantity || 0), 0);
+    const forwardedFromDist = dbDeliveries
+        .filter((d) => d.source_role === 'distributor' && ['IN_TRANSIT', 'DELIVERED'].includes(d.status))
+        .reduce((s, d) => s + (d.quantity || 0), 0);
+    const atDistQty = Math.max(0, receivedAtDist - forwardedFromDist);
+    const inTransitPharmacy = verifiedDeliveries
+        .filter((d) => d.sourceRole === 'distributor' && d.status === 'IN_TRANSIT')
+        .reduce((s, d) => s + d.quantity, 0);
+    const deliveredPharmacy = verifiedDeliveries
+        .filter((d) => d.sourceRole === 'distributor' && d.status === 'DELIVERED')
+        .reduce((s, d) => s + d.quantity, 0);
     const stockParts = [];
     if (availableMfg > 0) stockParts.push(`${availableMfg} na zalogi`);
     if (pendingQty > 0) stockParts.push(`${pendingQty} čaka prevzem`);
+    if (atDistQty > 0) stockParts.push(`${atDistQty} pri distributorju`);
+    if (inTransitPharmacy > 0) stockParts.push(`${inTransitPharmacy} v dostavi v lekarno`);
+    if (deliveredPharmacy > 0) stockParts.push(`${deliveredPharmacy} v lekarni`);
 
     const chainStatus = onChainMedicine?.status || null;
     const currentHolderLabel = walletLabel(walletMap, onChainMedicine?.currentHolder);
@@ -318,7 +349,8 @@ export async function buildVerifiedMedicineView({
             deliveriesIndex: 'postgres-inbox-only',
             note: chainTimeline.length === 0
                 ? 'Na verigi še ni handoff dogodkov. Po redeploy pogodbe in novih pošiljkah bo pot dobave prišla iz blockchaina.'
-                : 'Pot dobave in statusi iz Sepolia; VC preverjeni prek Walt.id Verifier API (tutorial OID4VP).'
+                : 'Pot dobave in statusi iz blockchaina; VC preverjeni prek Walt.id Verifier API (tutorial OID4VP).',
+            chainNetwork: process.env.CHAIN_NAME || 'Sepolia'
         }
     };
 }
