@@ -173,36 +173,59 @@ async function getUserFromBlockchain(walletAddress) {
     };
 }
 
+function isEmptyChainReadError(error) {
+    return error?.code === 'BAD_DATA'
+        || error?.message?.includes('could not decode')
+        || error?.message?.includes('value="0x"');
+}
+
 async function getMedicineFromBlockchain(medicineId) {
     if (!readContract) {
         throw new Error('Blockchain not initialized');
     }
-    const medicine = await readContract.getMedicine(medicineId);
-    return {
-        medicineId: medicine.medicineId,
-        ipfsHash: medicine.ipfsHash,
-        manufacturer: medicine.manufacturer,
-        createdAt: Number(medicine.createdAt),
-        status: medicine.status,
-        currentHolder: medicine.currentHolder,
-        currentHolderDID: medicine.currentHolderDID
-    };
+    try {
+        const medicine = await readContract.getMedicine(medicineId);
+        if (!medicine?.medicineId) {
+            return null;
+        }
+        return {
+            medicineId: medicine.medicineId,
+            ipfsHash: medicine.ipfsHash,
+            manufacturer: medicine.manufacturer,
+            createdAt: Number(medicine.createdAt),
+            status: medicine.status,
+            currentHolder: medicine.currentHolder,
+            currentHolderDID: medicine.currentHolderDID
+        };
+    } catch (error) {
+        if (isEmptyChainReadError(error)) {
+            return null;
+        }
+        throw error;
+    }
 }
 
 async function getMedicineHistory(medicineId) {
     if (!readContract) {
         throw new Error('Blockchain not initialized');
     }
-    const history = await readContract.getMedicineHistory(medicineId);
-    return history.map((tx) => ({
-        medicineId: tx.medicineId,
-        from: tx.from,
-        fromDID: tx.fromDID,
-        to: tx.to,
-        toDID: tx.toDID,
-        timestamp: Number(tx.timestamp),
-        status: tx.status
-    }));
+    try {
+        const history = await readContract.getMedicineHistory(medicineId);
+        return history.map((tx) => ({
+            medicineId: tx.medicineId,
+            from: tx.from,
+            fromDID: tx.fromDID,
+            to: tx.to,
+            toDID: tx.toDID,
+            timestamp: Number(tx.timestamp),
+            status: tx.status
+        }));
+    } catch (error) {
+        if (isEmptyChainReadError(error)) {
+            return [];
+        }
+        throw error;
+    }
 }
 
 async function getMedicineHandoffsFromBlockchain(medicineId) {
@@ -250,6 +273,25 @@ function getBlockchainConfig() {
     };
 }
 
+async function isContractDeployed() {
+    if (!provider || !contractAddress) {
+        return false;
+    }
+    try {
+        const code = await provider.getCode(contractAddress);
+        return Boolean(code && code !== '0x');
+    } catch {
+        return false;
+    }
+}
+
+function resetBlockchainRead() {
+    provider = null;
+    readContract = null;
+    contractAddress = null;
+    global.blockchainRead = null;
+}
+
 export {
     CONTRACT_ABI,
     CHAIN_ID,
@@ -259,5 +301,7 @@ export {
     getMedicineFromBlockchain,
     getMedicineHistory,
     getMedicineHandoffsFromBlockchain,
-    getBlockchainConfig
+    getBlockchainConfig,
+    isContractDeployed,
+    resetBlockchainRead
 };

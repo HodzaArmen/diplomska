@@ -17,10 +17,10 @@ const CHAIN_STEPS = {
 
 /** Kdo mora potrditi handoff v MetaMask (msg.sender) */
 export const CHAIN_STEP_ACTOR = {
+    MANUFACTURED: 'proizvajalec (ob ustvarjanju zdravila)',
     SENT_TO_DISTRIBUTOR: 'proizvajalec (po pošiljanju distributorju)',
     RECEIVED_BY_DISTRIBUTOR: 'distributer (po kliku Sprejmi od proizvajalca)',
-    FORWARDED_TO_PHARMACY: 'distributer (po pošiljanju v lekarno)',
-    FORWARDED_TO_PHARMACY_alt: 'distributer (po pošiljanju v lekarno)'
+    FORWARDED_TO_PHARMACY: 'distributer (po pošiljanju v lekarno)'
 };
 
 export function chainPathNextSteps(missing = []) {
@@ -62,14 +62,23 @@ export function buildReceiveGateResult({
     if (!ipfs?.accessible) {
         reasons.push(ipfs?.message || 'IPFS metapodatki niso dostopni');
     }
-    if (chainPath?.required && !chainPath.valid) {
+
+    const chainPending = Boolean(chainPath?.chainPending);
+    const chainBlocked = chainPath?.required && !chainPath.valid && !chainPending;
+
+    if (chainBlocked) {
         reasons.push(chainPath.message || 'Izdelek ni sledil pričakovani poti na blockchainu');
     }
 
+    const credentialOk = reasons.length === 0;
+
     return {
-        allowed: reasons.length === 0,
-        counterfeitAlert: reasons.length > 0,
-        reasons,
+        allowed: credentialOk && !(chainPath?.required && !chainPath.valid),
+        counterfeitAlert: !credentialOk,
+        chainPending,
+        reasons: chainPending
+            ? [chainPath.message, ...(chainPath.nextSteps || [])]
+            : reasons,
         stage
     };
 }
@@ -86,6 +95,7 @@ export async function validateChainPathForReceive({
             required: false,
             valid: true,
             skipped: true,
+            chainPending: false,
             message: 'Blockchain ni konfiguriran — preskočeno'
         };
     }
@@ -96,7 +106,10 @@ export async function validateChainPathForReceive({
             return {
                 required: true,
                 valid: false,
-                message: 'Zdravilo ni registrirano na blockchainu (MANUFACTURED)'
+                chainPending: true,
+                missing: ['MANUFACTURED'],
+                nextSteps: chainPathNextSteps(['MANUFACTURED']),
+                message: 'Zdravilo ni registrirano na blockchainu — preverite deploy pogodbe ali ponovno ustvarite zdravilo (backend avto-registracija)'
             };
         }
 
@@ -104,6 +117,7 @@ export async function validateChainPathForReceive({
             return {
                 required: true,
                 valid: false,
+                chainPending: false,
                 message: 'IPFS hash v bazi se ne ujema s hashom na verigi'
             };
         }
@@ -139,16 +153,18 @@ export async function validateChainPathForReceive({
             return {
                 required: true,
                 valid: false,
+                chainPending: true,
                 missing,
                 events: [...events],
                 nextSteps: chainPathNextSteps(missing),
-                message: `Manjkajoči dogodki na verigi za ${deliveryId}: ${missing.join(', ')}`
+                message: `Manjkajo potrditve na verigi: ${missing.join(', ')}`
             };
         }
 
         return {
             required: true,
             valid: true,
+            chainPending: false,
             events: [...events],
             onChainStatus: onChain.status
         };
@@ -156,7 +172,9 @@ export async function validateChainPathForReceive({
         return {
             required: true,
             valid: false,
-            message: `Preverjanje verige ni uspelo: ${error.message}`
+            chainPending: true,
+            nextSteps: ['Preverite povezavo z blockchainom (RPC, CONTRACT_ADDRESS) in MetaMask omrežje'],
+            message: `Blockchain ni dosegljiv: ${error.message}`
         };
     }
 }

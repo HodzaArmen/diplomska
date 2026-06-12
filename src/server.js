@@ -28,8 +28,16 @@ import {
     SEPOLIA_CHAIN_ID,
     initializeBlockchainReadOnly,
     getMedicineFromBlockchain,
-    getMedicineHistory
+    getMedicineHistory,
+    isContractDeployed
 } from './blockchain.js';
+import {
+    isChainAutoSignEnabled,
+    canAutoSignForWallet,
+    ensureUserRegisteredServer,
+    registerMedicineServer,
+    recordHandoffServer
+} from './blockchain-write.js';
 import {
     issueMedicineCredential,
     issueHandoffCredential,
@@ -70,10 +78,16 @@ app.use(express.static(PUBLIC_DIR));
 
 // ===== RATE LIMITING =====
 const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // limit each IP to 100 requests per windowMs
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.API_RATE_LIMIT_MAX || (Number(process.env.CHAIN_ID) === 31337 ? 2000 : 500)),
     standardHeaders: true,
     legacyHeaders: false,
+    handler: (_req, res) => {
+        res.status(429).json({
+            error: 'Preveč zahtev — počakajte in poskusite znova',
+            code: 'RATE_LIMIT'
+        });
+    }
 });
 
 // Apply rate limiting to all API endpoints
@@ -204,6 +218,9 @@ async function loadOnChainMedicine(medicineId) {
     }
     try {
         const data = await getMedicineFromBlockchain(medicineId);
+        if (!data?.medicineId) {
+            return { available: false, error: 'Zdravilo ni registrirano na verigi' };
+        }
         const history = await getMedicineHistory(medicineId);
         return {
             available: true,
@@ -297,6 +314,28 @@ async function userCanAccessMedicine(wallet, role, medicineId) {
         return r.rows.length > 0;
     }
     return false;
+}
+
+async function autoExecuteChainHandoff(actorWallet, chainHandoff) {
+    if (!chainHandoff?.needsBlockchain || !chainHandoff.payload) {
+        return chainHandoff;
+    }
+    if (!isChainAutoSignEnabled() || !canAutoSignForWallet(actorWallet)) {
+        return chainHandoff;
+    }
+    try {
+        const result = await recordHandoffServer(actorWallet, chainHandoff.payload);
+        if (!result?.txHash) return chainHandoff;
+        return {
+            needsBlockchain: false,
+            autoSigned: true,
+            txHash: result.txHash,
+            payload: chainHandoff.payload
+        };
+    } catch (error) {
+        console.error('Auto-sign handoff:', error.message);
+        return chainHandoff;
+    }
 }
 
 function buildChainHandoffPayload({
@@ -955,20 +994,23 @@ app.get('/api/auth/validate-session', async (req, res) => {
 
 // ===== BLOCKCHAIN (MetaMask podpis v brskalniku) =====
 
-app.get('/api/blockchain/config', (req, res) => {
+app.get('/api/blockchain/config', async (req, res) => {
     if (!CONTRACT_ADDRESS) {
         return res.status(503).json({ success: false, error: 'CONTRACT_ADDRESS ni nastavljen v src/.env' });
     }
+    const contractDeployed = ensureBlockchainRead() ? await isContractDeployed() : false;
     res.json({
         success: true,
         contractAddress: CONTRACT_ADDRESS,
+        contractDeployed,
         chainId: CHAIN_ID,
         chainIdHex: chainIdHex(CHAIN_ID),
         network: CHAIN_NAME,
         rpcUrl: CHAIN_RPC_PUBLIC,
         signingModel: 'metamask',
         abi: CONTRACT_ABI,
-        explorer: ETHERSCAN_BASE || null
+        explorer: ETHERSCAN_BASE || null,
+        deployHint: contractDeployed ? null : 'Zaženite scripts/deploy-anvil.ps1 — brez deploya MetaMask TX ne deluje'
     });
 });
 
@@ -1018,6 +1060,22 @@ app.post('/api/blockchain/confirm', async (req, res) => {
             );
             if (med.rows.length === 0) {
                 return res.status(403).json({ error: 'Zdravilo ni najdeno ali nimate dostopa' });
+            }
+            if (ensureBlockchainRead() && !(await isContractDeployed())) {
+                return res.status(503).json({
+                    error: 'Smart contract ni deployan. Zaženite scripts/deploy-anvil.ps1',
+                    contractNotDeployed: true
+                });
+            }
+            const onChain = ensureBlockchainRead()
+                ? await getMedicineFromBlockchain(medicineId)
+                : null;
+            if (ensureBlockchainRead() && !onChain?.medicineId) {
+                return res.status(400).json({
+                    error: 'Transakcija še ni vidna na verigi — počakajte in ponovite, ali ponovno potrdite registerMedicine v MetaMask',
+                    verifyFailed: true,
+                    contractNotDeployed: !(await isContractDeployed())
+                });
             }
             await pool.query(
                 `UPDATE medicines SET blockchain_tx_hash = $1, blockchain_status = $2 WHERE medicine_id = $3`,
@@ -1077,15 +1135,23 @@ app.get('/api/system/status', async (req, res) => {
             pingWaltService(WALT_VERIFIER_API, '/')
         ]);
 
+        let contractDeployed = false;
+        if (CONTRACT_ADDRESS && ensureBlockchainRead()) {
+            contractDeployed = await isContractDeployed();
+        }
+
         const blockchainRuntime = {
             configured: Boolean(config.blockchain.rpcSet && config.blockchain.contractSet),
+            contractDeployed,
             signingModel: 'metamask',
             chainId: CHAIN_ID,
             network: CHAIN_NAME,
             contract: CONTRACT_ADDRESS || null,
-            hint: CHAIN_ID === 31337
-                ? 'Lokalni Anvil — brez faucetov; uvozi Anvil račune v MetaMask'
-                : 'Vsak udeleženec podpiše TX v MetaMask (Sepolia ETH)'
+            hint: !contractDeployed && CONTRACT_ADDRESS
+                ? 'Pogodba ni deployana — zaženite scripts/deploy-anvil.ps1 (Anvil reset briše stanje)'
+                : (CHAIN_ID === 31337
+                    ? 'Lokalni Anvil — po vsakem docker compose recreate anvil ponovno deploy + registerMedicine'
+                    : 'Vsak udeleženec podpiše TX v MetaMask (Sepolia ETH)')
         };
 
         res.json({
@@ -1277,22 +1343,51 @@ app.post('/api/medicines/create', async (req, res) => {
         const warnings = [];
         if (!vcSigned) warnings.push(`VC: ${vcCredential?.error || 'podpis prek Issuer API ni uspel'}`);
         if (!ipfsHash) warnings.push(`IPFS: ${ipfsError || 'upload ni uspel'}`);
-        const needsBlockchain = Boolean(ipfsHash && CONTRACT_ADDRESS);
-        if (needsBlockchain) {
-            warnings.push('Blockchain: potrdite registerMedicine v MetaMask (Sepolia)');
+
+        let blockchainTxHash = null;
+        let blockchainStatus = ipfsHash && CONTRACT_ADDRESS ? 'PENDING' : 'MANUFACTURED';
+        let needsBlockchain = Boolean(ipfsHash && CONTRACT_ADDRESS);
+
+        if (needsBlockchain && isChainAutoSignEnabled() && canAutoSignForWallet(user.wallet_address)) {
+            try {
+                await ensureUserRegisteredServer(user.wallet_address, user.did, user.role);
+                const reg = await registerMedicineServer(user.wallet_address, medicineId, ipfsHash);
+                if (reg?.txHash) {
+                    blockchainTxHash = reg.txHash;
+                    blockchainStatus = 'MANUFACTURED';
+                    needsBlockchain = false;
+                    await pool.query(
+                        `UPDATE medicines SET blockchain_tx_hash = $1, blockchain_status = $2 WHERE medicine_id = $3`,
+                        [blockchainTxHash, 'MANUFACTURED', medicineId]
+                    );
+                    await pool.query(
+                        `INSERT INTO supply_chain_history (medicine_id, action, actor_wallet, actor_role, actor_did, blockchain_tx_hash)
+                         VALUES ($1, $2, $3, $4, $5, $6)`,
+                        [medicineId, 'BLOCKCHAIN_REGISTERED', user.wallet_address, user.role, user.did, blockchainTxHash]
+                    );
+                    console.log(`✓ registerMedicine (server auto-sign) ${medicineId}`);
+                }
+            } catch (chainErr) {
+                warnings.push(`Blockchain: ${chainErr.message}`);
+            }
+        } else if (needsBlockchain) {
+            warnings.push(`Blockchain: potrdite registerMedicine v MetaMask (${CHAIN_NAME})`);
         } else if (!CONTRACT_ADDRESS) {
             warnings.push('Blockchain: CONTRACT_ADDRESS ni nastavljen');
         }
 
-        const fullyIntegrated = Boolean(ipfsHash && vcSigned && (!CONTRACT_ADDRESS || needsBlockchain));
+        const fullyIntegrated = Boolean(ipfsHash && vcSigned && (!CONTRACT_ADDRESS || !needsBlockchain));
 
         res.json({
             success: true,
             fullyIntegrated,
             needsBlockchain,
-            message: needsBlockchain
-                ? 'Zdravilo pripravljeno — potrdite registracijo v MetaMask'
-                : (fullyIntegrated ? 'Zdravilo ustvarjeno (Walt.id VC + IPFS)' : 'Zdravilo shranjeno v bazi, nekateri koraki niso uspeli'),
+            blockchainAutoSigned: Boolean(blockchainTxHash),
+            message: blockchainTxHash
+                ? 'Zdravilo ustvarjeno (Walt.id VC + IPFS + blockchain)'
+                : (needsBlockchain
+                    ? 'Zdravilo pripravljeno — potrdite registracijo v MetaMask'
+                    : (fullyIntegrated ? 'Zdravilo ustvarjeno (Walt.id VC + IPFS)' : 'Zdravilo shranjeno v bazi, nekateri koraki niso uspeli')),
             warnings,
             medicine: {
                 medicineId,
@@ -1303,9 +1398,9 @@ app.post('/api/medicines/create', async (req, res) => {
                 ipfsHash,
                 ipfsError,
                 ipfsLinks: getIpfsLinks(ipfsHash),
-                blockchainTxHash: null,
-                blockchainStatus: needsBlockchain ? 'PENDING' : 'MANUFACTURED',
-                blockchainExplorer: getBlockchainExplorerLinks(null),
+                blockchainTxHash,
+                blockchainStatus,
+                blockchainExplorer: getBlockchainExplorerLinks(blockchainTxHash),
                 vcSigned,
                 targetPharmacyName
             }
@@ -1320,6 +1415,50 @@ app.post('/api/medicines/create', async (req, res) => {
         res.status(500).json({ error: error.message });
     } finally {
         client.release();
+    }
+});
+
+// 7b. CANCEL PENDING SHIPMENT — rollback če MetaMask zavrne handoff
+app.post('/api/deliveries/cancel', async (req, res) => {
+    try {
+        const { sessionId, deliveryId } = req.body;
+        if (!sessionId || !deliveryId) {
+            return res.status(400).json({ error: 'Manjkata sessionId in deliveryId' });
+        }
+
+        const wallet = await getSessionWallet(sessionId);
+        if (!wallet) {
+            return res.status(401).json({ error: 'Neveljavna seja' });
+        }
+
+        const delivery = await selectDeliveryByDeliveryId(deliveryId);
+        if (!delivery) {
+            return res.status(404).json({ error: 'Pošiljka ni najdena' });
+        }
+
+        if (delivery.source_wallet.toLowerCase() !== wallet.toLowerCase()) {
+            return res.status(403).json({ error: 'Preklic je dovoljen samo pošiljatelju' });
+        }
+
+        if (delivery.blockchain_tx_hash) {
+            return res.status(400).json({ error: 'Pošiljka je že potrjena na verigi — preklic ni mogoč' });
+        }
+
+        const cancellable = delivery.source_role === 'manufacturer'
+            ? delivery.status === 'PENDING'
+            : delivery.source_role === 'distributor' && delivery.status === 'IN_TRANSIT';
+
+        if (!cancellable) {
+            return res.status(400).json({ error: `Status ${delivery.status} — preklic ni mogoč` });
+        }
+
+        await pool.query('DELETE FROM supply_chain_history WHERE delivery_id = $1', [deliveryId]);
+        await pool.query('DELETE FROM deliveries WHERE delivery_id = $1', [deliveryId]);
+
+        res.json({ success: true, message: 'Pošiljka preklicana (MetaMask ni potrdil handoffa)' });
+    } catch (error) {
+        console.error('Cancel delivery error:', error.message);
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -1366,6 +1505,34 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
 
         if (quantity > available) {
             return res.status(400).json({ error: `Na voljo je samo ${available} enot` });
+        }
+
+        if (ensureBlockchainRead()) {
+            if (!(await isContractDeployed())) {
+                return res.status(503).json({
+                    error: 'Smart contract ni deployan na Anvilu. Zaženite scripts/deploy-anvil.ps1',
+                    contractNotDeployed: true
+                });
+            }
+            let onChain = await getMedicineFromBlockchain(medicineId);
+            if (!onChain?.medicineId && isChainAutoSignEnabled() && medicine.ipfs_hash
+                && canAutoSignForWallet(manufacturer.wallet_address)) {
+                await ensureUserRegisteredServer(manufacturer.wallet_address, manufacturer.did, manufacturer.role);
+                const reg = await registerMedicineServer(manufacturer.wallet_address, medicineId, medicine.ipfs_hash);
+                if (reg?.txHash) {
+                    await pool.query(
+                        `UPDATE medicines SET blockchain_tx_hash = $1, blockchain_status = 'MANUFACTURED' WHERE medicine_id = $2`,
+                        [reg.txHash, medicineId]
+                    );
+                    onChain = await getMedicineFromBlockchain(medicineId);
+                }
+            }
+            if (!onChain?.medicineId) {
+                return res.status(400).json({
+                    error: 'Zdravilo ni registrirano na verigi. Ustvarite zdravilo znova ali preverite deploy pogodbe (deploy-anvil.ps1).',
+                    needsBlockchainRegistration: true
+                });
+            }
         }
 
         const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
@@ -1420,7 +1587,7 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
         );
 
         const transportJwt = extractJwtFromVcCredential(transportVc);
-        const chainHandoff = buildChainHandoffPayload({
+        let chainHandoff = buildChainHandoffPayload({
             medicineId,
             deliveryId,
             quantity,
@@ -1428,15 +1595,30 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
             counterpartyDid: distributor.did,
             eventType: 'SENT_TO_DISTRIBUTOR',
             transportJwt,
-            newHolderWallet: manufacturer.wallet_address,
-            newHolderDid: manufacturer.did
+            newHolderWallet: targetDistributorWallet,
+            newHolderDid: distributor.did
         });
+
+        chainHandoff = await autoExecuteChainHandoff(manufacturer.wallet_address, chainHandoff);
+        if (chainHandoff.autoSigned && chainHandoff.txHash) {
+            await pool.query(
+                `UPDATE deliveries SET blockchain_tx_hash = $1 WHERE delivery_id = $2`,
+                [chainHandoff.txHash, deliveryId]
+            );
+            await pool.query(
+                `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, blockchain_tx_hash)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [medicineId, deliveryId, 'SENT_TO_DISTRIBUTOR', manufacturer.wallet_address, 'manufacturer', manufacturer.did, chainHandoff.txHash]
+            );
+        }
 
         res.json({
             success: true,
-            message: chainHandoff.needsBlockchain
-                ? 'Pošiljka pripravljena — potrdite handoff v MetaMask'
-                : 'Zdravilo poslano distributorju',
+            message: chainHandoff.autoSigned
+                ? 'Zdravilo poslano distributorju (VC + veriga)'
+                : (chainHandoff.needsBlockchain
+                    ? 'Pošiljka pripravljena — potrdite handoff v MetaMask'
+                    : 'Zdravilo poslano distributorju'),
             delivery: {
                 deliveryId,
                 medicineId,
@@ -1446,7 +1628,7 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
                 transportVcIssued: (() => {
                     try { return Boolean(JSON.parse(transportVc || '{}').signedJwt); } catch { return false; }
                 })(),
-                chainTxHash: null
+                chainTxHash: chainHandoff.txHash || null
             },
             chainHandoff
         });
@@ -1481,7 +1663,35 @@ app.get('/api/medicines/my-medicines', async (req, res) => {
                     COALESCE(SUM(d.quantity), 0) AS shipped_quantity,
                     m.quantity - COALESCE(SUM(d.quantity), 0) AS available_quantity,
                     COALESCE(SUM(CASE WHEN d.status = 'PENDING' THEN d.quantity ELSE 0 END), 0) AS pending_quantity,
-                    COALESCE(SUM(CASE WHEN d.status = 'RECEIVED' THEN d.quantity ELSE 0 END), 0) AS at_distributor_quantity
+                    GREATEST(0,
+                        COALESCE(SUM(CASE WHEN d.status = 'RECEIVED' AND d.source_role = 'manufacturer' THEN d.quantity ELSE 0 END), 0)
+                        - COALESCE((
+                            SELECT SUM(d2.quantity) FROM deliveries d2
+                            WHERE d2.medicine_id = m.medicine_id
+                              AND d2.source_role = 'distributor'
+                              AND d2.status IN ('IN_TRANSIT', 'DELIVERED')
+                        ), 0)
+                    ) AS at_distributor_quantity,
+                    COALESCE((
+                        SELECT SUM(d3.quantity) FROM deliveries d3
+                        WHERE d3.medicine_id = m.medicine_id
+                          AND d3.source_role = 'distributor'
+                          AND d3.status = 'IN_TRANSIT'
+                    ), 0) AS in_transit_to_pharmacy,
+                    COALESCE((
+                        SELECT SUM(d4.quantity) FROM deliveries d4
+                        WHERE d4.medicine_id = m.medicine_id
+                          AND d4.source_role = 'distributor'
+                          AND d4.status = 'DELIVERED'
+                    ), 0) AS delivered_to_pharmacy,
+                    COALESCE((
+                        SELECT SUM(d5.quantity) FROM deliveries d5
+                        WHERE d5.medicine_id = m.medicine_id
+                          AND d5.source_wallet = m.manufacturer_wallet
+                          AND d5.source_role = 'manufacturer'
+                          AND d5.status = 'PENDING'
+                          AND d5.blockchain_tx_hash IS NULL
+                    ), 0) AS pending_metamask_quantity
              FROM medicines m
              LEFT JOIN deliveries d ON m.medicine_id = d.medicine_id
                 AND d.source_wallet = m.manufacturer_wallet
@@ -1492,21 +1702,37 @@ app.get('/api/medicines/my-medicines', async (req, res) => {
             [manufacturer.wallet_address]
         );
 
-        const medicines = medicinesResult.rows.map(row => {
+        const chainLive = Boolean(ensureBlockchainRead()) && await isContractDeployed();
+        const medicines = await Promise.all(medicinesResult.rows.map(async (row) => {
             const available = parseInt(row.available_quantity ?? 0, 10);
             const pending = parseInt(row.pending_quantity ?? 0, 10);
             const atDist = parseInt(row.at_distributor_quantity ?? 0, 10);
+            const inTransit = parseInt(row.in_transit_to_pharmacy ?? 0, 10);
+            const delivered = parseInt(row.delivered_to_pharmacy ?? 0, 10);
+            const pendingMeta = parseInt(row.pending_metamask_quantity ?? 0, 10);
             const parts = [];
             if (available > 0) parts.push(`${available} na zalogi`);
-            if (pending > 0) parts.push(`${pending} čaka prevzem`);
+            if (pendingMeta > 0) parts.push(`${pendingMeta} čaka MetaMask`);
+            if (pending > pendingMeta) parts.push(`${pending - pendingMeta} čaka prevzem`);
+            else if (pending > 0 && pendingMeta === 0) parts.push(`${pending} čaka prevzem`);
             if (atDist > 0) parts.push(`${atDist} pri distributorju`);
+            if (inTransit > 0) parts.push(`${inTransit} v dostavi v lekarno`);
+            if (delivered > 0) parts.push(`${delivered} v lekarni`);
+
+            let onChainRegistered = false;
+            if (chainLive) {
+                const onChain = await getMedicineFromBlockchain(row.medicine_id);
+                onChainRegistered = Boolean(onChain?.medicineId);
+            }
+
             return {
                 ...row,
+                on_chain_registered: onChainRegistered,
                 stock_status_label: parts.length ? parts.join(' · ') : 'Vse poslano',
                 ipfsLinks: getIpfsLinks(row.ipfs_hash),
                 vcSigned: Boolean(extractJwtFromVcCredential(row.vc_credential))
             };
-        });
+        }));
 
         res.json({
             success: true,
@@ -1649,10 +1875,14 @@ app.get('/api/distributor/incoming-deliveries', async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
+        const blockchainReady = Boolean(ensureBlockchainRead());
+        const chainFilter = blockchainReady ? 'AND d.blockchain_tx_hash IS NOT NULL' : '';
+
         const result = await pool.query(
             `SELECT d.delivery_id, d.medicine_id, d.quantity, d.status, d.created_at,
                     m.name AS medicine_name, m.batch_number, m.expiry_date,
-                    u.company_name AS manufacturer_name
+                    u.company_name AS manufacturer_name,
+                    (d.blockchain_tx_hash IS NOT NULL) AS chain_confirmed
              FROM deliveries d
              JOIN medicines m ON d.medicine_id = m.medicine_id
              JOIN users u ON d.source_wallet = u.wallet_address
@@ -1660,11 +1890,27 @@ app.get('/api/distributor/incoming-deliveries', async (req, res) => {
                AND d.source_role = 'manufacturer'
                AND d.status = 'PENDING'
                AND d.is_active = TRUE
+               ${chainFilter}
              ORDER BY d.created_at DESC`,
             [distributorWallet]
         );
 
-        res.json({ success: true, deliveries: result.rows });
+        let pendingChainUnconfirmed = 0;
+        if (blockchainReady) {
+            const unconfirmed = await pool.query(
+                `SELECT COUNT(*)::int AS cnt FROM deliveries
+                 WHERE target_wallet = $1 AND source_role = 'manufacturer'
+                   AND status = 'PENDING' AND blockchain_tx_hash IS NULL`,
+                [distributorWallet]
+            );
+            pendingChainUnconfirmed = unconfirmed.rows[0]?.cnt ?? 0;
+        }
+
+        res.json({
+            success: true,
+            deliveries: result.rows,
+            pendingChainUnconfirmed
+        });
     } catch (error) {
         console.error('Get distributor incoming deliveries error:', error.message);
         res.status(500).json({ error: error.message });
@@ -1762,6 +2008,16 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
         });
 
         if (!gate.allowed) {
+            if (gate.chainPending) {
+                return res.status(409).json({
+                    error: 'Prevzem še ni mogoč — manjkajo potrditve na verigi',
+                    chainPending: true,
+                    reasons: gate.reasons,
+                    nextSteps: chainPath.nextSteps || chainPathNextSteps(chainPath.missing),
+                    verification,
+                    chainPath
+                });
+            }
             await pool.query(
                 `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -1797,7 +2053,7 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
         );
 
         const transportJwt = extractJwtFromVcCredential(row.transport_vc_credential);
-        const chainHandoff = buildChainHandoffPayload({
+        let chainHandoff = buildChainHandoffPayload({
             medicineId,
             deliveryId,
             quantity,
@@ -1809,11 +2065,25 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
             newHolderDid: distributor.did
         });
 
+        if (isChainAutoSignEnabled()) {
+            await ensureUserRegisteredServer(distributorWallet, distributor.did, distributor.role);
+        }
+        chainHandoff = await autoExecuteChainHandoff(distributorWallet, chainHandoff);
+        if (chainHandoff.autoSigned && chainHandoff.txHash) {
+            await pool.query(
+                `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, blockchain_tx_hash)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [medicineId, deliveryId, 'RECEIVED_BY_DISTRIBUTOR', distributorWallet, 'distributor', distributor.did, chainHandoff.txHash]
+            );
+        }
+
         res.json({
             success: true,
-            message: chainHandoff.needsBlockchain
-                ? 'Pošiljka sprejeta — potrdite handoff v MetaMask'
-                : 'Pošiljka sprejeta — VC in veriga preverjena',
+            message: chainHandoff.autoSigned
+                ? 'Pošiljka sprejeta — VC in veriga preverjena'
+                : (chainHandoff.needsBlockchain
+                    ? 'Pošiljka sprejeta — potrdite handoff v MetaMask'
+                    : 'Pošiljka sprejeta — VC in veriga preverjena'),
             verification,
             chainPath,
             chainHandoff,
@@ -1931,6 +2201,7 @@ app.get('/api/pharmacy/incoming-deliveries', async (req, res) => {
              JOIN medicines m ON d.medicine_id = m.medicine_id
              WHERE d.target_wallet = $1 AND d.status = 'IN_TRANSIT'
                AND d.source_role = 'distributor' AND d.is_active = TRUE
+               AND d.blockchain_tx_hash IS NOT NULL
              ORDER BY d.created_at DESC`,
             [pharmacy.wallet_address]
         );
@@ -2117,7 +2388,7 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
         );
 
         const transportJwt = extractJwtFromVcCredential(transportVc);
-        const chainHandoff = buildChainHandoffPayload({
+        let chainHandoff = buildChainHandoffPayload({
             medicineId,
             deliveryId,
             quantity,
@@ -2125,15 +2396,33 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
             counterpartyDid: pharmacy.did,
             eventType: 'FORWARDED_TO_PHARMACY',
             transportJwt,
-            newHolderWallet: distributorWallet,
-            newHolderDid: distributor.did
+            newHolderWallet: targetPharmacyWallet,
+            newHolderDid: pharmacy.did
         });
+
+        if (isChainAutoSignEnabled()) {
+            await ensureUserRegisteredServer(distributorWallet, distributor.did, distributor.role);
+        }
+        chainHandoff = await autoExecuteChainHandoff(distributorWallet, chainHandoff);
+        if (chainHandoff.autoSigned && chainHandoff.txHash) {
+            await pool.query(
+                `UPDATE deliveries SET blockchain_tx_hash = $1 WHERE delivery_id = $2`,
+                [chainHandoff.txHash, deliveryId]
+            );
+            await pool.query(
+                `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, blockchain_tx_hash)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [medicineId, deliveryId, 'FORWARDED_TO_PHARMACY', distributorWallet, 'distributor', distributor.did, chainHandoff.txHash]
+            );
+        }
 
         res.json({
             success: true,
-            message: chainHandoff.needsBlockchain
-                ? 'Pošiljka pripravljena — potrdite handoff v MetaMask'
-                : 'Zdravilo poslano v lekarno',
+            message: chainHandoff.autoSigned
+                ? 'Zdravilo poslano v lekarno (VC + veriga)'
+                : (chainHandoff.needsBlockchain
+                    ? 'Pošiljka pripravljena — potrdite handoff v MetaMask'
+                    : 'Zdravilo poslano v lekarno'),
             delivery: {
                 deliveryId,
                 medicineId,
@@ -2146,7 +2435,7 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
                         return Boolean(p.signedJwt || p.signed === true);
                     } catch { return false; }
                 })(),
-                chainTxHash: null
+                chainTxHash: chainHandoff.txHash || null
             },
             chainHandoff
         });
@@ -2246,6 +2535,20 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
         });
 
         if (!gate.allowed) {
+            if (gate.chainPending) {
+                return res.status(409).json({
+                    error: 'Prevzem še ni mogoč — manjkajo potrditve na verigi',
+                    chainPending: true,
+                    reasons: gate.reasons,
+                    nextSteps: chainPath.nextSteps || chainPathNextSteps(chainPath.missing),
+                    verification: {
+                        medicineVc: medicineVcVerification,
+                        transportVc: transportVcVerification,
+                        ipfs: ipfsVerification
+                    },
+                    chainPath
+                });
+            }
             await pool.query(
                 `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -2310,7 +2613,7 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
         const distWallet = pendingRow.source_wallet;
         const distDid = distributorDid;
 
-        const chainHandoff = buildChainHandoffPayload({
+        let chainHandoff = buildChainHandoffPayload({
             medicineId,
             deliveryId,
             quantity,
@@ -2322,11 +2625,25 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
             newHolderDid: pharmacy.did
         });
 
+        if (isChainAutoSignEnabled()) {
+            await ensureUserRegisteredServer(pharmacyWallet, pharmacy.did, pharmacy.role);
+        }
+        chainHandoff = await autoExecuteChainHandoff(pharmacyWallet, chainHandoff);
+        if (chainHandoff.autoSigned && chainHandoff.txHash) {
+            await pool.query(
+                `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, blockchain_tx_hash)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [medicineId, deliveryId, 'RECEIVED_AT_PHARMACY', pharmacyWallet, 'pharmacy', pharmacy.did, chainHandoff.txHash]
+            );
+        }
+
         res.json({
             success: true,
-            message: chainHandoff.needsBlockchain
-                ? 'Pošiljka prevzeta — potrdite handoff v MetaMask'
-                : 'Pošiljka prevzeta — VC, IPFS in veriga preverjena',
+            message: chainHandoff.autoSigned
+                ? 'Pošiljka prevzeta — VC, IPFS in veriga preverjena'
+                : (chainHandoff.needsBlockchain
+                    ? 'Pošiljka prevzeta — potrdite handoff v MetaMask'
+                    : 'Pošiljka prevzeta — VC, IPFS in veriga preverjena'),
             verification: {
                 medicineVc: medicineVcVerification,
                 transportVc: transportVcVerification,
