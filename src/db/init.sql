@@ -91,6 +91,21 @@ CREATE TABLE IF NOT EXISTS supply_chain_history (
     FOREIGN KEY (medicine_id) REFERENCES medicines(medicine_id) ON DELETE CASCADE
 );
 
+-- ===== PARTNER REPUTATION =====
+CREATE TABLE IF NOT EXISTS partner_reputation (
+    id SERIAL PRIMARY KEY,
+    medicine_id VARCHAR(255),
+    delivery_id VARCHAR(255) NOT NULL,
+    reviewer_wallet VARCHAR(255) NOT NULL,
+    reviewed_wallet VARCHAR(255) NOT NULL,
+    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    comment TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (reviewer_wallet) REFERENCES users(wallet_address) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_partner_reputation_reviewed ON partner_reputation(reviewed_wallet);
+
 -- ===== PHARMACIES TABLE (for reference) =====
 CREATE TABLE IF NOT EXISTS pharmacies (
     id SERIAL PRIMARY KEY,
