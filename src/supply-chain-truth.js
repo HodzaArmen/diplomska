@@ -13,6 +13,8 @@ import {
 } from './blockchain.js';
 
 export const CHAIN_EVENT_LABELS = {
+    COUNTERFEIT_ALERT: 'Opozorilo: možen ponaredek (prevzem zavrnjen)',
+    PARTNER_REPUTATION: 'Ocena partnerja po prevzemu',
     MANUFACTURED: 'Registrirano na verigi',
     manufactured: 'Registrirano na verigi',
     SENT_TO_DISTRIBUTOR: 'Odpremljeno k distributorju',

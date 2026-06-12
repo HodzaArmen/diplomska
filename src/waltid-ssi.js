@@ -716,22 +716,53 @@ function policiesPassed(policyResults) {
     );
 }
 
-async function initOid4vpVerificationSession(credentialType) {
+const verifierCallbackResults = new Map();
+
+export function storeVerifierCallbackResult(stateOrId, payload) {
+    if (stateOrId) verifierCallbackResults.set(stateOrId, payload);
+}
+
+export function getVerifierCallbackResult(stateOrId) {
+    return verifierCallbackResults.get(stateOrId) || null;
+}
+
+function waltWalletAuthHeaders({ waltCookie, waltBearerToken } = {}) {
+    if (waltBearerToken) {
+        return { Authorization: `Bearer ${waltBearerToken}` };
+    }
+    if (waltCookie) {
+        return { Cookie: waltCookie };
+    }
+    return {};
+}
+
+async function initOid4vpVerificationSession(credentialType, options = {}) {
+    const { statusCallbackUri, authorizeBaseUrl, walletId } = options;
+    const body = {
+        request_credentials: [
+            {
+                type: credentialType,
+                format: 'jwt_vc_json'
+            }
+        ]
+    };
+    if (statusCallbackUri) {
+        body.statusCallbackUri = statusCallbackUri;
+    }
+
+    const resolvedAuthorizeBase = authorizeBaseUrl
+        || (walletId
+            ? `${WALLET_API}/wallet/${walletId}/exchange/usePresentationRequest`
+            : 'openid4vp://authorize');
+
     const response = await axios.post(
         `${VERIFIER_API}/openid4vc/verify`,
-        {
-            request_credentials: [
-                {
-                    type: credentialType,
-                    format: 'jwt_vc_json'
-                }
-            ]
-        },
+        body,
         {
             headers: {
                 'Content-Type': 'application/json',
                 responseMode: 'direct_post',
-                authorizeBaseUrl: 'openid4vp://authorize'
+                authorizeBaseUrl: resolvedAuthorizeBase
             },
             timeout: 30000,
             validateStatus: () => true
@@ -758,8 +789,126 @@ async function initOid4vpVerificationSession(credentialType) {
 
     return {
         ...auth,
+        authorizationUrl: response.data,
         presentationDefinition: pdResponse.data
     };
+}
+
+/**
+ * Tutorial tok: wallet matchCredentials → resolvePresentationRequest → usePresentationRequest → GET session
+ */
+export async function verifyCredentialViaWallet({
+    walletId,
+    waltCookie = null,
+    waltBearerToken = null,
+    credentialType,
+    expectedIssuerDid = null
+}) {
+    if (!walletId) {
+        return { verified: false, message: 'Manjka wallet_id za wallet verify tok' };
+    }
+
+    const authHeaders = waltWalletAuthHeaders({ waltCookie, waltBearerToken });
+
+    try {
+        const session = await initOid4vpVerificationSession(credentialType, {
+            walletId,
+            statusCallbackUri: process.env.VERIFIER_STATUS_CALLBACK_URL || null
+        });
+
+        const resolvedResponse = await axios.post(
+            `${WALLET_API}/wallet/${walletId}/exchange/resolvePresentationRequest`,
+            session.authorizationUrl,
+            {
+                headers: {
+                    ...authHeaders,
+                    'Content-Type': 'text/plain',
+                    Accept: 'text/plain'
+                },
+                transformRequest: [(data) => data],
+                timeout: 30000,
+                validateStatus: () => true
+            }
+        );
+
+        if (resolvedResponse.status >= 400) {
+            throw new Error(`resolvePresentationRequest ${resolvedResponse.status}`);
+        }
+
+        const resolvedRequest = resolvedResponse.data;
+        const matchResponse = await axios.post(
+            `${WALLET_API}/wallet/${walletId}/exchange/matchCredentialsForPresentationDefinition`,
+            session.presentationDefinition,
+            {
+                headers: {
+                    ...authHeaders,
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json'
+                },
+                timeout: 30000,
+                validateStatus: () => true
+            }
+        );
+
+        if (matchResponse.status >= 400) {
+            throw new Error(`matchCredentials ${matchResponse.status}`);
+        }
+
+        const matches = Array.isArray(matchResponse.data) ? matchResponse.data : [];
+        if (matches.length === 0) {
+            return {
+                verified: false,
+                message: `Wallet nima ustreznega ${credentialType} credentiala`,
+                source: 'wallet-api'
+            };
+        }
+
+        const selectedCredentials = matches.map((m) => m.id).filter(Boolean);
+        await axios.post(
+            `${WALLET_API}/wallet/${walletId}/exchange/usePresentationRequest`,
+            {
+                presentationRequest: resolvedRequest,
+                selectedCredentials
+            },
+            {
+                headers: {
+                    ...authHeaders,
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json'
+                },
+                timeout: 60000,
+                validateStatus: () => true
+            }
+        );
+
+        const result = await fetchOid4vpVerificationSession(session.state);
+        const signatureOk = policiesPassed(result.policyResults);
+        const verified = result.verificationResult === true && signatureOk;
+
+        const jwt = matches[0]?.document;
+        const parties = jwt ? extractVcParties(jwt) : { issuer: null, subject: null };
+        const issuerOk = matchesExpectedIssuer(parties, expectedIssuerDid);
+
+        return {
+            verified: verified && issuerOk,
+            structuralOnly: false,
+            issuer: parties.issuer,
+            subject: parties.subject,
+            message: verified && issuerOk
+                ? 'VC predstavljen iz wallet-a in preverjen (tutorial OID4VP)'
+                : verified
+                    ? `Podpis veljaven, DID se ne ujema (${expectedIssuerDid})`
+                    : 'Wallet predstavitev ni prestala verifier politik',
+            source: 'wallet-api',
+            details: { sessionId: result.id, policyResults: result.policyResults }
+        };
+    } catch (error) {
+        return {
+            verified: false,
+            message: `Wallet verify napaka: ${error.message}`,
+            source: 'wallet-api'
+        };
+    }
 }
 
 async function submitOid4vpPresentation({ responseUri, state, jwt, presentationDefinition }) {
@@ -797,15 +946,19 @@ async function fetchOid4vpVerificationSession(state) {
 /**
  * Preveri JWT VC prek uradnega Walt.id OID4VP toka:
  * init seja → direct_post vp_token → GET /openid4vc/session/{state}
+ * @param {object} [options]
+ * @param {boolean} [options.strict] — brez strukturnega fallbacka (produkcijski gate)
  */
-export async function verifyCredentialJwt(jwt, expectedIssuerDid = null) {
+export async function verifyCredentialJwt(jwt, expectedIssuerDid = null, options = {}) {
+    const { strict = false, statusCallbackUri = process.env.VERIFIER_STATUS_CALLBACK_URL || null } = options;
+
     if (!jwt || typeof jwt !== 'string') {
-        return { verified: false, message: 'Manjka JWT credential' };
+        return { verified: false, message: 'Manjka JWT credential', structuralOnly: false };
     }
 
     try {
         const credentialType = getCredentialTypeFromJwt(jwt);
-        const session = await initOid4vpVerificationSession(credentialType);
+        const session = await initOid4vpVerificationSession(credentialType, { statusCallbackUri });
         await submitOid4vpPresentation({
             responseUri: session.responseUri,
             state: session.state,
@@ -813,7 +966,8 @@ export async function verifyCredentialJwt(jwt, expectedIssuerDid = null) {
             presentationDefinition: session.presentationDefinition
         });
 
-        const result = await fetchOid4vpVerificationSession(session.state);
+        const callbackHit = getVerifierCallbackResult(session.state);
+        const result = callbackHit || await fetchOid4vpVerificationSession(session.state);
         const signatureOk = policiesPassed(result.policyResults);
         const verified = result.verificationResult === true && signatureOk;
 
@@ -831,7 +985,8 @@ export async function verifyCredentialJwt(jwt, expectedIssuerDid = null) {
                     : `Podpis veljaven, vendar udeleženec se ne ujema s pričakovanim DID (${expectedIssuerDid})`,
                 details: {
                     sessionId: result.id,
-                    policyResults: result.policyResults
+                    policyResults: result.policyResults,
+                    viaCallback: Boolean(callbackHit)
                 }
             };
         }
@@ -844,7 +999,51 @@ export async function verifyCredentialJwt(jwt, expectedIssuerDid = null) {
         console.log(`Verifier API OID4VP verify error: ${error.message}`);
     }
 
+    if (strict) {
+        return {
+            verified: false,
+            structuralOnly: false,
+            message: 'Kriptografsko preverjanje prek Verifier API ni uspelo (fail-closed)'
+        };
+    }
+
     return structuralVerify(jwt, expectedIssuerDid);
+}
+
+/**
+ * Preveri VC ob prevzemu: najprej wallet (tutorial), nato OID4VP z JWT referenco.
+ */
+export async function verifyCredentialForReceive({
+    jwt,
+    expectedIssuerDid,
+    credentialType,
+    walletOpts = null
+}) {
+    const strictOpts = { strict: true };
+
+    if (walletOpts?.walletId && (walletOpts.waltCookie || walletOpts.waltBearerToken)) {
+        const walletResult = await verifyCredentialViaWallet({
+            walletId: walletOpts.walletId,
+            waltCookie: walletOpts.waltCookie,
+            waltBearerToken: walletOpts.waltBearerToken,
+            credentialType,
+            expectedIssuerDid
+        });
+        if (walletResult.verified) {
+            return walletResult;
+        }
+    }
+
+    if (jwt) {
+        return verifyCredentialJwt(jwt, expectedIssuerDid, strictOpts);
+    }
+
+    return {
+        verified: false,
+        structuralOnly: false,
+        message: 'VC ni na voljo',
+        source: 'verifier-api'
+    };
 }
 
 export function isIssuerConfigured() {

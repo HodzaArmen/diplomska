@@ -34,9 +34,16 @@ import {
     issueMedicineCredential,
     issueHandoffCredential,
     verifyCredentialJwt,
+    verifyCredentialForReceive,
+    storeVerifierCallbackResult,
     decodeVcClaims
 } from './waltid-ssi.js';
 import { buildVerifiedMedicineView, vcJwtReference } from './supply-chain-truth.js';
+import {
+    buildReceiveGateResult,
+    validateChainPathForReceive,
+    chainPathNextSteps
+} from './receive-gate.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -72,12 +79,30 @@ const apiLimiter = rateLimit({
 // Apply rate limiting to all API endpoints
 app.use('/api/', apiLimiter);
 
+// Verifier statusCallbackUri (tutorial) — asinhroni rezultat predstavitve
+app.post('/api/webhooks/verifier/status', (req, res) => {
+    const payload = req.body || {};
+    const key = payload.id || payload.state || req.query.state;
+    if (key) {
+        storeVerifierCallbackResult(key, payload);
+    }
+    res.status(200).json({ received: true });
+});
+
 // ===== CONFIGURATION =====
 const WALT_API = process.env.WALT_ID_API_URL;
 const WALT_ISSUER_API = process.env.WALT_ISSUER_API_URL || 'http://issuer-api:7002';
 const WALT_VERIFIER_API = process.env.WALT_VERIFIER_API_URL || 'http://verifier-api:7003';
-const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
+const CHAIN_RPC_URL = process.env.CHAIN_RPC_URL || process.env.SEPOLIA_RPC_URL;
+const CHAIN_ID = Number(process.env.CHAIN_ID || 11155111);
+const CHAIN_NAME = process.env.CHAIN_NAME || (CHAIN_ID === 31337 ? 'Anvil Local' : 'Sepolia');
+const CHAIN_RPC_PUBLIC = process.env.CHAIN_RPC_PUBLIC || CHAIN_RPC_URL;
+const SEPOLIA_RPC_URL = CHAIN_RPC_URL;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
+
+function chainIdHex(chainId = CHAIN_ID) {
+    return `0x${Number(chainId).toString(16)}`;
+}
 const PORT = process.env.PORT || 3000;
 const SESSION_EXPIRY_HOURS = 168; // 7 days - NOTE: Keep in sync with SQL INTERVAL '7 days'
 const API_TIMEOUT_MS = 30000;
@@ -158,15 +183,17 @@ function getIpfsLinks(ipfsHash) {
     return getIpfsGatewayUrls(ipfsHash);
 }
 
-const ETHERSCAN_BASE = (process.env.ETHERSCAN_BASE_URL || 'https://sepolia.etherscan.io').replace(/\/$/, '');
+const ETHERSCAN_BASE = (process.env.ETHERSCAN_BASE_URL
+    || (CHAIN_ID === 31337 ? '' : 'https://sepolia.etherscan.io')).replace(/\/$/, '');
 
 function getBlockchainExplorerLinks(txHash, extra = {}) {
     const contract = CONTRACT_ADDRESS;
+    const hasExplorer = Boolean(ETHERSCAN_BASE);
     return {
-        network: 'Sepolia',
-        explorer: ETHERSCAN_BASE,
-        tx: txHash ? `${ETHERSCAN_BASE}/tx/${txHash}` : null,
-        contract: contract ? `${ETHERSCAN_BASE}/address/${contract}` : null,
+        network: CHAIN_NAME,
+        explorer: ETHERSCAN_BASE || null,
+        tx: hasExplorer && txHash ? `${ETHERSCAN_BASE}/tx/${txHash}` : null,
+        contract: hasExplorer && contract ? `${ETHERSCAN_BASE}/address/${contract}` : null,
         ...extra
     };
 }
@@ -201,7 +228,9 @@ function getIntegrationConfigStatus() {
             secretSet: Boolean(process.env.PINATA_SECRET_API_KEY)
         },
         blockchain: {
-            rpcSet: Boolean(SEPOLIA_RPC_URL),
+            rpcSet: Boolean(CHAIN_RPC_URL),
+            chainId: CHAIN_ID,
+            chainName: CHAIN_NAME,
             contractSet: Boolean(CONTRACT_ADDRESS),
             signingModel: 'metamask'
         },
@@ -368,11 +397,11 @@ function extractJwtFromVcCredential(vcCredentialRaw) {
 }
 
 function ensureBlockchainRead() {
-    if (!SEPOLIA_RPC_URL || !CONTRACT_ADDRESS) {
+    if (!CHAIN_RPC_URL || !CONTRACT_ADDRESS) {
         return null;
     }
     if (!global.blockchainRead) {
-        global.blockchainRead = initializeBlockchainReadOnly(SEPOLIA_RPC_URL, CONTRACT_ADDRESS);
+        global.blockchainRead = initializeBlockchainReadOnly(CHAIN_RPC_URL, CONTRACT_ADDRESS);
     }
     return global.blockchainRead;
 }
@@ -933,11 +962,13 @@ app.get('/api/blockchain/config', (req, res) => {
     res.json({
         success: true,
         contractAddress: CONTRACT_ADDRESS,
-        chainId: SEPOLIA_CHAIN_ID,
-        network: 'Sepolia',
+        chainId: CHAIN_ID,
+        chainIdHex: chainIdHex(CHAIN_ID),
+        network: CHAIN_NAME,
+        rpcUrl: CHAIN_RPC_PUBLIC,
         signingModel: 'metamask',
         abi: CONTRACT_ABI,
-        explorer: ETHERSCAN_BASE
+        explorer: ETHERSCAN_BASE || null
     });
 });
 
@@ -1049,9 +1080,12 @@ app.get('/api/system/status', async (req, res) => {
         const blockchainRuntime = {
             configured: Boolean(config.blockchain.rpcSet && config.blockchain.contractSet),
             signingModel: 'metamask',
-            chainId: SEPOLIA_CHAIN_ID,
+            chainId: CHAIN_ID,
+            network: CHAIN_NAME,
             contract: CONTRACT_ADDRESS || null,
-            hint: 'Vsak udeleženec podpiše TX v MetaMask (Sepolia ETH)'
+            hint: CHAIN_ID === 31337
+                ? 'Lokalni Anvil — brez faucetov; uvozi Anvil račune v MetaMask'
+                : 'Vsak udeleženec podpiše TX v MetaMask (Sepolia ETH)'
         };
 
         res.json({
@@ -1250,7 +1284,7 @@ app.post('/api/medicines/create', async (req, res) => {
             warnings.push('Blockchain: CONTRACT_ADDRESS ni nastavljen');
         }
 
-        const fullyIntegrated = Boolean(ipfsHash && vcSigned && !needsBlockchain);
+        const fullyIntegrated = Boolean(ipfsHash && vcSigned && (!CONTRACT_ADDRESS || needsBlockchain));
 
         res.json({
             success: true,
@@ -1638,19 +1672,27 @@ app.get('/api/distributor/incoming-deliveries', async (req, res) => {
 });
 
 // 10b. DISTRIBUTOR: Receive delivery from manufacturer
-async function verifyIncomingDeliveryCredentials(medicine, transportVcRaw, expectedSenderDid) {
+async function verifyIncomingDeliveryCredentials(medicine, transportVcRaw, expectedSenderDid, receiverUser = null) {
     const medicineJwt = extractJwtFromVcCredential(medicine?.vc_credential);
     const transportJwt = extractJwtFromVcCredential(transportVcRaw);
 
-    let medicineVc = { verified: false, message: 'VC zdravila ni na voljo' };
-    let transportVc = { verified: false, message: 'VC pošiljke ni na voljo' };
+    const walletOpts = receiverUser?.wallet_id && receiverUser?.walt_api_cookie
+        ? { walletId: receiverUser.wallet_id, waltCookie: receiverUser.walt_api_cookie }
+        : null;
 
-    if (medicineJwt) {
-        medicineVc = await verifyCredentialJwt(medicineJwt, medicine.manufacturer_did);
-    }
-    if (transportJwt) {
-        transportVc = await verifyCredentialJwt(transportJwt, expectedSenderDid);
-    }
+    const medicineVc = await verifyCredentialForReceive({
+        jwt: medicineJwt,
+        expectedIssuerDid: medicine.manufacturer_did,
+        credentialType: 'MedicineCredential',
+        walletOpts
+    });
+
+    const transportVc = await verifyCredentialForReceive({
+        jwt: transportJwt,
+        expectedIssuerDid: expectedSenderDid,
+        credentialType: 'MedicineTransportCredential',
+        walletOpts
+    });
 
     let ipfs = { accessible: false, message: 'IPFS hash ni v bazi' };
     if (medicine.ipfs_hash) {
@@ -1692,23 +1734,55 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
         const quantity = row.quantity;
         const medicine = row;
 
+        const distributorResult = await pool.query(
+            'SELECT * FROM users WHERE wallet_address = $1',
+            [distributorWallet]
+        );
+        const distributor = distributorResult.rows[0];
+
         const verification = await verifyIncomingDeliveryCredentials(
             medicine,
             row.transport_vc_credential,
-            row.sender_did
+            row.sender_did,
+            distributor
         );
+
+        const chainPath = await validateChainPathForReceive({
+            medicineId,
+            deliveryId,
+            stage: 'distributor',
+            blockchainReady: Boolean(ensureBlockchainRead()),
+            ipfsHashFromDb: medicine.ipfs_hash
+        });
+
+        const gate = buildReceiveGateResult({
+            ...verification,
+            chainPath,
+            stage: 'distributor'
+        });
+
+        if (!gate.allowed) {
+            await pool.query(
+                `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [medicineId, deliveryId, 'COUNTERFEIT_ALERT', distributorWallet, 'distributor',
+                 distributor.did, JSON.stringify({ reasons: gate.reasons, stage: 'distributor' })]
+            );
+            return res.status(422).json({
+                error: 'PONAREDEK — prevzem zavrnjen',
+                counterfeitAlert: true,
+                reasons: gate.reasons,
+                nextSteps: chainPath.nextSteps || chainPathNextSteps(chainPath.missing),
+                verification,
+                chainPath
+            });
+        }
 
         await pool.query(
             `UPDATE deliveries SET status = 'RECEIVED', received_at = CURRENT_TIMESTAMP
              WHERE delivery_id = $1 AND target_wallet = $2`,
             [deliveryId, distributorWallet]
         );
-
-        const distributorResult = await pool.query(
-            'SELECT * FROM users WHERE wallet_address = $1',
-            [distributorWallet]
-        );
-        const distributor = distributorResult.rows[0];
 
         await pool.query(
             `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
@@ -1721,8 +1795,6 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
                  transportVcVerified: verification.transportVc.verified
              })]
         );
-
-        const vcOk = verification.medicineVc.verified && verification.transportVc.verified;
 
         const transportJwt = extractJwtFromVcCredential(row.transport_vc_credential);
         const chainHandoff = buildChainHandoffPayload({
@@ -1739,11 +1811,13 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
 
         res.json({
             success: true,
-            message: vcOk
-                ? (chainHandoff.needsBlockchain ? 'Pošiljka sprejeta — potrdite handoff v MetaMask' : 'Pošiljka sprejeta — VC preverjen')
-                : 'Pošiljka sprejeta — preverite opozorila',
+            message: chainHandoff.needsBlockchain
+                ? 'Pošiljka sprejeta — potrdite handoff v MetaMask'
+                : 'Pošiljka sprejeta — VC in veriga preverjena',
             verification,
-            chainHandoff
+            chainPath,
+            chainHandoff,
+            partnerWallet: row.source_wallet
         });
     } catch (error) {
         console.error('Distributor receive delivery error:', error.message);
@@ -2103,48 +2177,23 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
 
         const pharmacyWallet = sessionResult.rows[0].wallet_address;
 
-        await pool.query(
-            `UPDATE deliveries SET status = 'DELIVERED', received_at = CURRENT_TIMESTAMP
-             WHERE delivery_id = $1 AND target_wallet = $2 AND status = 'IN_TRANSIT'`,
+        const pendingResult = await pool.query(
+            `SELECT d.*, m.*
+             FROM deliveries d
+             JOIN medicines m ON d.medicine_id = m.medicine_id
+             WHERE d.delivery_id = $1 AND d.target_wallet = $2 AND d.status = 'IN_TRANSIT'`,
             [deliveryId, pharmacyWallet]
         );
 
-        const deliveredResult = await pool.query(
-            `SELECT medicine_id, status, quantity, transport_vc_credential
-             FROM deliveries
-             WHERE delivery_id = $1 AND target_wallet = $2 AND status = 'DELIVERED'`,
-            [deliveryId, pharmacyWallet]
-        );
-
-        if (deliveredResult.rows.length === 0) {
+        if (pendingResult.rows.length === 0) {
             return res.status(404).json({ error: 'Delivery not found or not authorized' });
         }
 
-        const { medicine_id: medicineId, quantity, transport_vc_credential: transportVcRaw } = deliveredResult.rows[0];
-
-        const medicineResult = await pool.query(
-            'SELECT * FROM medicines WHERE medicine_id = $1',
-            [medicineId]
-        );
-        const medicine = medicineResult.rows[0];
-
-        const medicineJwt = extractJwtFromVcCredential(medicine?.vc_credential);
-        const transportJwt = extractJwtFromVcCredential(transportVcRaw);
-
-        let medicineVcVerification = { verified: false, message: 'VC ni na voljo' };
-        let transportVcVerification = { verified: false, message: 'Transport VC ni na voljo' };
-
-        if (medicineJwt) {
-            medicineVcVerification = await verifyCredentialJwt(medicineJwt, medicine.manufacturer_did);
-        }
-
-        if (transportJwt) {
-            const distributorDid = (await pool.query(
-                'SELECT did FROM users WHERE wallet_address = (SELECT source_wallet FROM deliveries WHERE delivery_id = $1)',
-                [deliveryId]
-            )).rows[0]?.did;
-            transportVcVerification = await verifyCredentialJwt(transportJwt, distributorDid);
-        }
+        const pendingRow = pendingResult.rows[0];
+        const medicineId = pendingRow.medicine_id;
+        const quantity = pendingRow.quantity;
+        const transportVcRaw = pendingRow.transport_vc_credential;
+        const medicine = pendingRow;
 
         const pharmacyResult = await pool.query(
             'SELECT * FROM users WHERE wallet_address = $1',
@@ -2152,7 +2201,77 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
         );
         const pharmacy = pharmacyResult.rows[0];
 
-        // Update medicine blockchain status
+        const distributorDid = (await pool.query(
+            'SELECT did FROM users WHERE wallet_address = $1',
+            [pendingRow.source_wallet]
+        )).rows[0]?.did;
+
+        const walletOpts = pharmacy.wallet_id && pharmacy.walt_api_cookie
+            ? { walletId: pharmacy.wallet_id, waltCookie: pharmacy.walt_api_cookie }
+            : null;
+
+        const medicineVcVerification = await verifyCredentialForReceive({
+            jwt: extractJwtFromVcCredential(medicine?.vc_credential),
+            expectedIssuerDid: medicine.manufacturer_did,
+            credentialType: 'MedicineCredential',
+            walletOpts
+        });
+
+        const transportVcVerification = await verifyCredentialForReceive({
+            jwt: extractJwtFromVcCredential(transportVcRaw),
+            expectedIssuerDid: distributorDid,
+            credentialType: 'MedicineTransportCredential',
+            walletOpts
+        });
+
+        let ipfsVerification = { accessible: false, message: 'IPFS hash ni v bazi' };
+        if (medicine.ipfs_hash) {
+            ipfsVerification = await verifyIpfsAccessible(medicine.ipfs_hash);
+        }
+
+        const chainPath = await validateChainPathForReceive({
+            medicineId,
+            deliveryId,
+            stage: 'pharmacy',
+            blockchainReady: Boolean(ensureBlockchainRead()),
+            ipfsHashFromDb: medicine.ipfs_hash
+        });
+
+        const gate = buildReceiveGateResult({
+            medicineVc: medicineVcVerification,
+            transportVc: transportVcVerification,
+            ipfs: ipfsVerification,
+            chainPath,
+            stage: 'pharmacy'
+        });
+
+        if (!gate.allowed) {
+            await pool.query(
+                `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, actor_did, details)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [medicineId, deliveryId, 'COUNTERFEIT_ALERT', pharmacyWallet, 'pharmacy',
+                 pharmacy.did, JSON.stringify({ reasons: gate.reasons, stage: 'pharmacy' })]
+            );
+            return res.status(422).json({
+                error: 'PONAREDEK — prevzem zavrnjen',
+                counterfeitAlert: true,
+                reasons: gate.reasons,
+                nextSteps: chainPath.nextSteps || chainPathNextSteps(chainPath.missing),
+                verification: {
+                    medicineVc: medicineVcVerification,
+                    transportVc: transportVcVerification,
+                    ipfs: ipfsVerification
+                },
+                chainPath
+            });
+        }
+
+        await pool.query(
+            `UPDATE deliveries SET status = 'DELIVERED', received_at = CURRENT_TIMESTAMP
+             WHERE delivery_id = $1 AND target_wallet = $2 AND status = 'IN_TRANSIT'`,
+            [deliveryId, pharmacyWallet]
+        );
+
         await pool.query(`
             UPDATE medicines SET blockchain_status = 'DELIVERED'
             WHERE medicine_id = $1
@@ -2178,27 +2297,18 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
             );
         }
 
-        let ipfsVerification = { accessible: false, message: 'IPFS hash ni v bazi' };
-        if (medicine.ipfs_hash) {
-            ipfsVerification = await verifyIpfsAccessible(medicine.ipfs_hash);
-            if (ipfsVerification.accessible) {
-                await pool.query(
-                    `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, details)
-                     VALUES ($1, $2, $3, $4, $5, $6)`,
-                    [medicineId, deliveryId, 'IPFS_VERIFIED_AT_PHARMACY', pharmacyWallet, 'pharmacy',
-                     JSON.stringify({ hash: medicine.ipfs_hash, gateway: ipfsVerification.gateway })]
-                );
-            }
+        if (ipfsVerification.accessible) {
+            await pool.query(
+                `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, details)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [medicineId, deliveryId, 'IPFS_VERIFIED_AT_PHARMACY', pharmacyWallet, 'pharmacy',
+                 JSON.stringify({ hash: medicine.ipfs_hash, gateway: ipfsVerification.gateway })]
+            );
         }
 
-        const vcOk = medicineVcVerification.verified && transportVcVerification.verified;
-
-        const distributorRow = await pool.query(
-            'SELECT source_wallet, u.did AS source_did FROM deliveries d JOIN users u ON d.source_wallet = u.wallet_address WHERE d.delivery_id = $1',
-            [deliveryId]
-        );
-        const distWallet = distributorRow.rows[0]?.source_wallet;
-        const distDid = distributorRow.rows[0]?.source_did;
+        const transportJwt = extractJwtFromVcCredential(transportVcRaw);
+        const distWallet = pendingRow.source_wallet;
+        const distDid = distributorDid;
 
         const chainHandoff = buildChainHandoffPayload({
             medicineId,
@@ -2214,16 +2324,18 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
 
         res.json({
             success: true,
-            message: vcOk
-                ? (chainHandoff.needsBlockchain ? 'Pošiljka prevzeta — potrdite handoff v MetaMask' : 'Pošiljka prevzeta — VC preverjen')
-                : 'Pošiljka prevzeta — preverite opozorila spodaj',
+            message: chainHandoff.needsBlockchain
+                ? 'Pošiljka prevzeta — potrdite handoff v MetaMask'
+                : 'Pošiljka prevzeta — VC, IPFS in veriga preverjena',
             verification: {
                 medicineVc: medicineVcVerification,
                 transportVc: transportVcVerification,
                 ipfs: ipfsVerification,
                 ipfsLinks: getIpfsLinks(medicine.ipfs_hash)
             },
-            chainHandoff
+            chainPath,
+            chainHandoff,
+            partnerWallet: distWallet
         });
     } catch (error) {
         console.error('Receive delivery error:', error);
@@ -2531,7 +2643,7 @@ app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
         } else if (ipfsVerified) {
             message = 'IPFS zapis obstaja. VC/blockchain preverjanje ni uspelo.';
         } else if (!blockchainConfigured) {
-            message = 'Blockchain ni konfiguriran (SEPOLIA_RPC_URL, CONTRACT_ADDRESS).';
+            message = 'Blockchain ni konfiguriran (CHAIN_RPC_URL ali SEPOLIA_RPC_URL, CONTRACT_ADDRESS).';
         } else {
             message = 'Polno preverjanje ni uspelo.';
         }
@@ -2568,6 +2680,77 @@ app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
     }
 });
 
+// 18b. REPUTATION — povratna informacija po prevzemu (članek Kochovski et al.)
+app.post('/api/reputation/submit', async (req, res) => {
+    try {
+        const { sessionId, deliveryId, reviewedWallet, rating, comment } = req.body;
+
+        if (!sessionId || !deliveryId || !reviewedWallet || !rating) {
+            return res.status(400).json({ error: 'Manjkajo obvezna polja (sessionId, deliveryId, reviewedWallet, rating)' });
+        }
+
+        const score = Number(rating);
+        if (!Number.isInteger(score) || score < 1 || score > 5) {
+            return res.status(400).json({ error: 'Ocena mora biti celo število 1–5' });
+        }
+
+        if (!(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const reviewerWallet = await getSessionWallet(sessionId);
+        if (!reviewerWallet) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const deliveryCheck = await pool.query(
+            `SELECT medicine_id, source_wallet, target_wallet, status
+             FROM deliveries WHERE delivery_id = $1`,
+            [deliveryId]
+        );
+        if (deliveryCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Dostava ni najdena' });
+        }
+
+        const delivery = deliveryCheck.rows[0];
+        const allowedStatuses = ['RECEIVED', 'DELIVERED'];
+        if (!allowedStatuses.includes(delivery.status)) {
+            return res.status(400).json({ error: 'Oceno lahko podate šele po uspešnem prevzemu' });
+        }
+
+        const isParticipant = reviewerWallet === delivery.target_wallet
+            || reviewerWallet === delivery.source_wallet;
+        if (!isParticipant) {
+            return res.status(403).json({ error: 'Niste udeleženec te dostave' });
+        }
+
+        if (String(reviewedWallet).toLowerCase() !== String(delivery.source_wallet).toLowerCase()) {
+            return res.status(400).json({ error: 'Ocenjujete lahko le pošiljatelja (partnerja)' });
+        }
+
+        await pool.query(
+            `INSERT INTO partner_reputation (medicine_id, delivery_id, reviewer_wallet, reviewed_wallet, rating, comment)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [delivery.medicine_id, deliveryId, reviewerWallet, reviewedWallet, score, comment || null]
+        );
+
+        await pool.query(
+            `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, details)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [delivery.medicine_id, deliveryId, 'PARTNER_REPUTATION', reviewerWallet, 'receiver',
+             JSON.stringify({ reviewedWallet, rating: score, comment: comment || null })]
+        );
+
+        res.json({ success: true, message: 'Hvala za oceno partnerja' });
+    } catch (error) {
+        if (error.code === '42P01') {
+            return res.status(503).json({ error: 'Tabela partner_reputation še ne obstaja — ponovno zaženite DB migracijo' });
+        }
+        console.error('Reputation submit error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // 19. HEALTH CHECK
 app.get('/api/health', (req, res) => {
     res.json({
@@ -2594,6 +2777,19 @@ async function startServer() {
         await pool.query('SELECT NOW()');
         console.log('✓ Database connection successful');
 
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS partner_reputation (
+                id SERIAL PRIMARY KEY,
+                medicine_id VARCHAR(255),
+                delivery_id VARCHAR(255) NOT NULL,
+                reviewer_wallet VARCHAR(255) NOT NULL,
+                reviewed_wallet VARCHAR(255) NOT NULL,
+                rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                comment TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
         const cfg = getIntegrationConfigStatus();
         if (SEPOLIA_RPC_URL && CONTRACT_ADDRESS) {
             ensureBlockchainRead();
@@ -2607,7 +2803,7 @@ async function startServer() {
             console.log(`✓ Pinata/IPFS: ${cfg.pinata.configured ? 'configured' : 'NOT configured (src/.env)'}`);
             console.log(`✓ Ethereum RPC: ${cfg.blockchain.rpcSet ? 'configured' : 'NOT configured'}`);
             console.log(`✓ Contract: ${CONTRACT_ADDRESS || 'NOT configured'}`);
-            console.log(`✓ Blockchain podpis: MetaMask (Sepolia)`);
+            console.log(`✓ Blockchain podpis: MetaMask (${CHAIN_NAME}, chainId ${CHAIN_ID})`);
             console.log(`✓ Status API: http://localhost:${PORT}/api/system/status`);
             console.log(`✓ Database: app-postgres on port ${process.env.APP_POSTGRES_DB_PORT || 5433}`);
             console.log(`✓ Session expiry: ${SESSION_EXPIRY_HOURS} hours`);
