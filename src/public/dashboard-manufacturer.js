@@ -50,6 +50,7 @@ async function initializeDashboard() {
         }
 
         displayUserProfile();
+        ProfilePanel?.setupProfileButton?.(currentSessionId);
         await loadMedicineTemplates();
         await loadDistributors();
         attachEventListeners();
@@ -80,16 +81,11 @@ function updateWalletStatus() {
     walletBtn.innerHTML = `${email} | <strong>${shortAddress}</strong>`;
 
     walletBtn.style.cursor = 'pointer';
-    walletBtn.title = 'Klikni za kopiranje celotnega naslova';
+    walletBtn.title = 'Klik za profil';
     walletBtn.style.transition = 'all 0.2s ease';
+    walletBtn.style.cursor = 'pointer';
 
-    walletBtn.onclick = async function() {
-        try {
-            await navigator.clipboard.writeText(fullAddress);
-        } catch (err) {
-            console.error('Napaka pri kopiranju v odložišče:', err);
-        }
-    };
+    walletBtn.onclick = () => ProfilePanel?.openProfilePanel?.(currentSessionId);
 }
 
 async function loadMedicineTemplates() {

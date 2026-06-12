@@ -29,6 +29,7 @@ import {
     initializeBlockchainReadOnly,
     getMedicineFromBlockchain,
     getMedicineHistory,
+    getUserFromBlockchain,
     isContractDeployed
 } from './blockchain.js';
 import {
@@ -52,6 +53,10 @@ import {
     validateChainPathForReceive,
     chainPathNextSteps
 } from './receive-gate.js';
+import {
+    buildVcAssistantExplanation,
+    enhanceExplanationWithAi
+} from './vc-assistant.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -949,6 +954,169 @@ app.get('/api/auth/user-info', async (req, res) => {
         });
     } catch (error) {
         console.error('Get user info error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 3b. PROFILE — pregled in urejanje profila
+app.get('/api/profile', async (req, res) => {
+    try {
+        const { sessionId } = req.query;
+        if (!sessionId || !(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Neveljavna seja' });
+        }
+
+        const userResult = await pool.query('SELECT * FROM users WHERE session_id = $1', [sessionId]);
+        if (userResult.rows.length === 0) {
+            return res.status(401).json({ error: 'Uporabnik ni najden' });
+        }
+        const u = userResult.rows[0];
+
+        let onChainUser = { registered: false, did: null, role: null };
+        if (ensureBlockchainRead()) {
+            try {
+                const chainUser = await getUserFromBlockchain(u.wallet_address);
+                if (chainUser?.registered) {
+                    onChainUser = {
+                        registered: true,
+                        did: chainUser.did,
+                        role: chainUser.role
+                    };
+                }
+            } catch {
+                // veriga nedosegljiva
+            }
+        }
+
+        const contractDeployed = CONTRACT_ADDRESS ? await isContractDeployed() : false;
+
+        res.json({
+            success: true,
+            profile: {
+                walletAddress: u.wallet_address,
+                role: u.role,
+                companyName: u.company_name,
+                email: u.email,
+                did: u.did,
+                walletId: u.wallet_id,
+                waltEmail: u.walt_email,
+                hasWaltSession: Boolean(u.walt_api_cookie),
+                walletConnectedAt: u.wallet_connected_at,
+                waltIdRegisteredAt: u.walt_id_registered_at
+            },
+            onChainUser,
+            blockchain: {
+                network: CHAIN_NAME,
+                chainId: CHAIN_ID,
+                contractAddress: CONTRACT_ADDRESS || null,
+                contractDeployed,
+                autoSignEnabled: isChainAutoSignEnabled(),
+                canAutoSign: canAutoSignForWallet(u.wallet_address)
+            }
+        });
+    } catch (error) {
+        console.error('Get profile error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/profile', async (req, res) => {
+    try {
+        const { sessionId, companyName, email } = req.body;
+        if (!sessionId || !(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Neveljavna seja' });
+        }
+
+        const sanitizedCompany = String(companyName || '').trim().slice(0, 255);
+        const sanitizedEmail = String(email || '').trim().slice(0, 255);
+
+        if (!sanitizedCompany || sanitizedCompany.length < 2) {
+            return res.status(400).json({ error: 'Ime podjetja mora imeti vsaj 2 znaka' });
+        }
+        if (!sanitizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitizedEmail)) {
+            return res.status(400).json({ error: 'Vnesite veljaven e-poštni naslov' });
+        }
+
+        const result = await pool.query(
+            `UPDATE users SET company_name = $1, email = $2, updated_at = CURRENT_TIMESTAMP
+             WHERE session_id = $3 RETURNING wallet_address, role, company_name, email, did, wallet_id, walt_email`,
+            [sanitizedCompany, sanitizedEmail, sessionId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Uporabnik ni najden' });
+        }
+        const row = result.rows[0];
+
+        res.json({
+            success: true,
+            message: 'Profil posodobljen',
+            user: {
+                walletAddress: row.wallet_address,
+                role: row.role,
+                companyName: row.company_name,
+                email: row.email,
+                did: row.did,
+                walletId: row.wallet_id,
+                waltEmail: row.walt_email
+            }
+        });
+    } catch (error) {
+        console.error('Update profile error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/profile/sync-blockchain', async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+        if (!sessionId || !(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Neveljavna seja' });
+        }
+
+        const userResult = await pool.query('SELECT * FROM users WHERE session_id = $1', [sessionId]);
+        if (userResult.rows.length === 0) {
+            return res.status(401).json({ error: 'Uporabnik ni najden' });
+        }
+        const user = userResult.rows[0];
+
+        if (!user.did) {
+            return res.status(400).json({ error: 'Manjka DID — najprej dokončajte Walt.id registracijo' });
+        }
+
+        if (!(await isContractDeployed())) {
+            return res.status(503).json({
+                error: 'Smart contract ni deployan — zaženite scripts/deploy-anvil.ps1'
+            });
+        }
+
+        const existing = await getUserFromBlockchain(user.wallet_address);
+        if (existing?.registered) {
+            return res.json({
+                success: true,
+                alreadyRegistered: true,
+                message: 'Uporabnik je že registriran na verigi',
+                onChainUser: { did: existing.did, role: existing.role }
+            });
+        }
+
+        if (isChainAutoSignEnabled() && canAutoSignForWallet(user.wallet_address)) {
+            const reg = await ensureUserRegisteredServer(user.wallet_address, user.did, user.role);
+            return res.json({
+                success: true,
+                autoSigned: true,
+                txHash: reg.txHash || null,
+                message: 'Uporabnik registriran na verigi (strežniški podpis)'
+            });
+        }
+
+        res.json({
+            success: true,
+            needsMetaMask: true,
+            message: 'Potrdite registerUser v MetaMask'
+        });
+    } catch (error) {
+        console.error('Sync blockchain profile error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -2759,6 +2927,56 @@ async function handleMedicineDetailsRequest(req, res) {
 // 14. Podrobnosti zdravila — vse vloge
 app.get('/api/medicines/:medicineId/details', handleMedicineDetailsRequest);
 app.get('/api/pharmacy/medicine-details/:medicineId', handleMedicineDetailsRequest);
+
+// VC AI asistent — razlaga potrdil v kontekstu zdravila
+app.get('/api/medicines/:medicineId/vc-assistant', async (req, res) => {
+    try {
+        const medicineId = req.params.medicineId;
+        const { sessionId, deliveryId, enhance } = req.query;
+
+        if (!sessionId || !(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Neveljavna seja' });
+        }
+
+        const userResult = await pool.query(
+            'SELECT wallet_address, role FROM users WHERE session_id = $1',
+            [sessionId]
+        );
+        if (userResult.rows.length === 0) {
+            return res.status(401).json({ error: 'Uporabnik ni najden' });
+        }
+
+        const { wallet_address: viewerWallet, role: viewerRole } = userResult.rows[0];
+        if (!(await userCanAccessMedicine(viewerWallet, viewerRole, medicineId))) {
+            return res.status(403).json({ error: 'Nimate dostopa do tega zdravila' });
+        }
+
+        const medicine = await buildMedicineDetailsResponse(medicineId, {
+            viewerWallet,
+            viewerRole,
+            deliveryId: deliveryId || null
+        });
+        if (!medicine) {
+            return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+        }
+
+        const explanation = buildVcAssistantExplanation(medicine, viewerRole, deliveryId || null);
+        let ai = null;
+        if (enhance === 'true' || enhance === '1') {
+            ai = await enhanceExplanationWithAi(explanation, medicine);
+        }
+
+        res.json({
+            success: true,
+            explanation,
+            ai,
+            openAiConfigured: Boolean(process.env.OPENAI_API_KEY)
+        });
+    } catch (error) {
+        console.error('VC assistant error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // 15. LOGIN — MetaMask denarnica + Walt.id email + geslo
 app.post('/api/auth/login', async (req, res) => {

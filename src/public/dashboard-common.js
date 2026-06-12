@@ -41,7 +41,8 @@ function setupDashboardNav(user, roleEmoji) {
     const email = user.waltEmail || user.email || '';
     walletBtn.innerHTML = `${email} · <strong>${short}</strong>`;
     walletBtn.title = 'Klik za kopiranje naslova';
-    walletBtn.onclick = () => navigator.clipboard?.writeText(user.walletAddress).catch(() => {});
+    walletBtn.onclick = () => ProfilePanel?.openProfilePanel?.(sessionStorage.getItem('sessionId'));
+    walletBtn.title = 'Klik za profil';
 }
 
 function setupDashboardLogout(sessionId) {

@@ -72,6 +72,69 @@ function renderVcBlock(claims, title, verified, opts = {}) {
     </div>`;
 }
 
+function renderAssistantMarkdown(text) {
+    if (!text) return '';
+    return escapeHtml(text)
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/`([^`]+)`/g, '<code class="code-break">$1</code>')
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n/g, '<br>')
+        .replace(/^/, '<p>')
+        .replace(/$/, '</p>');
+}
+
+function renderVcAssistantSections(sections) {
+    if (!sections?.length) return '<p class="text-muted">Ni razlage.</p>';
+    return sections.map((s) => {
+        const statusCls = {
+            veljavno: 'vc-assistant-section--ok',
+            opozorilo: 'vc-assistant-section--warn',
+            manjka: 'vc-assistant-section--err',
+            info: 'vc-assistant-section--info'
+        }[s.status] || 'vc-assistant-section--info';
+        return `<article class="vc-assistant-section ${statusCls}">
+            <h5>${escapeHtml(s.title)}</h5>
+            <div class="vc-assistant-body">${renderAssistantMarkdown(s.text)}</div>
+        </article>`;
+    }).join('');
+}
+
+async function loadVcAssistant(medicineId, sessionId, containerEl, opts = {}) {
+    if (!containerEl) return;
+    containerEl.style.display = 'block';
+    containerEl.innerHTML = '<p class="text-muted">Analiziram VC…</p>';
+
+    let url = `/api/medicines/${encodeURIComponent(medicineId)}/vc-assistant?sessionId=${encodeURIComponent(sessionId)}`;
+    if (opts.deliveryId) url += `&deliveryId=${encodeURIComponent(opts.deliveryId)}`;
+    if (opts.enhanceAi) url += '&enhance=true';
+
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Napaka');
+
+        const exp = data.explanation;
+        let html = `<div class="vc-assistant-header">
+            <span class="badge badge-info">${escapeHtml(exp.mode)}</span>
+            ${data.openAiConfigured ? '<span class="badge badge-neutral">OpenAI na voljo</span>' : ''}
+        </div>`;
+        html += renderVcAssistantSections(exp.sections);
+
+        if (data.ai?.enhanced && data.ai.aiSummary) {
+            html += `<article class="vc-assistant-section vc-assistant-section--ai">
+                <h5>🤖 AI povzetek (${escapeHtml(data.ai.model || 'OpenAI')})</h5>
+                <div class="vc-assistant-body">${renderAssistantMarkdown(data.ai.aiSummary)}</div>
+            </article>`;
+        } else if (opts.enhanceAi && data.ai && !data.ai.enhanced) {
+            html += `<p class="text-muted vc-assistant-ai-hint">${escapeHtml(data.ai.reason || 'AI ni na voljo')}</p>`;
+        }
+
+        containerEl.innerHTML = html;
+    } catch (e) {
+        containerEl.innerHTML = `<p class="error-message">${escapeHtml(e.message)}</p>`;
+    }
+}
+
 function renderJourneyStepper(timeline, chainNetwork) {
     if (!timeline.length) {
         return `<div class="detail-chain-card detail-chain-empty">
@@ -215,6 +278,18 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
             ${trustBanner}
             ${deliveryFocus}
 
+            <section class="detail-section vc-assistant-wrap">
+                <div class="vc-assistant-toolbar">
+                    <h4 class="detail-section-title">AI asistent — razlaga VC</h4>
+                    <div class="vc-assistant-actions">
+                        <button type="button" class="btn btn-secondary btn-sm btn-vc-assistant">Razloži VC</button>
+                        <button type="button" class="btn btn-ghost btn-sm btn-vc-assistant-ai" title="Zahteva OPENAI_API_KEY">+ AI povzetek</button>
+                    </div>
+                </div>
+                <p class="text-muted vc-assistant-lead">Pregled Verifiable Credentials v kontekstu tega zdravila, verige in vaše vloge.</p>
+                <div class="vc-assistant-output" style="display:none;" aria-live="polite"></div>
+            </section>
+
             <section class="detail-section detail-section--primary">
                 <h4 class="detail-section-title">Pot dobave</h4>
                 ${renderJourneyStepper(timeline, chainNetwork)}
@@ -266,6 +341,15 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
 
     el.querySelector('.btn-close-detail')?.addEventListener('click', closeMedicineDetailPanel);
     el.querySelector('.btn-verify-detail')?.addEventListener('click', () => opts.onVerify(medicine.medicineId));
+
+    const assistantOut = el.querySelector('.vc-assistant-output');
+    const assistantOpts = { deliveryId: opts.deliveryId, sessionId: opts.sessionId };
+    el.querySelector('.btn-vc-assistant')?.addEventListener('click', () => {
+        loadVcAssistant(medicine.medicineId, opts.sessionId, assistantOut, assistantOpts);
+    });
+    el.querySelector('.btn-vc-assistant-ai')?.addEventListener('click', () => {
+        loadVcAssistant(medicine.medicineId, opts.sessionId, assistantOut, { ...assistantOpts, enhanceAi: true });
+    });
 }
 
 async function loadMedicineDetails(medicineId, sessionId, containerId, opts = {}) {
@@ -277,6 +361,6 @@ async function loadMedicineDetails(medicineId, sessionId, containerId, opts = {}
         throw new Error(err.error || 'Napaka pri nalaganju podatkov');
     }
     const data = await response.json();
-    displayMedicineDetailPanel(containerId, data.medicine, opts);
+    displayMedicineDetailPanel(containerId, data.medicine, { ...opts, sessionId });
     return data.medicine;
 }

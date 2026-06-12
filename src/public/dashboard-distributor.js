@@ -49,6 +49,7 @@ async function initializeDashboard() {
         }
 
         displayUserProfile();
+        ProfilePanel?.setupProfileButton?.(currentSessionId);
         attachEventListeners();
         updateWalletStatus();
         await loadPharmacies();
@@ -141,14 +142,8 @@ function updateWalletStatus() {
 
     walletBtn.innerHTML = `${email} | <strong>${shortAddress}</strong>`;
     walletBtn.style.cursor = 'pointer';
-    walletBtn.title = 'Klikni za kopiranje celotnega naslova';
-    walletBtn.onclick = async () => {
-        try {
-            await navigator.clipboard.writeText(fullAddress);
-        } catch (err) {
-            console.error('Napaka pri kopiranju:', err);
-        }
-    };
+    walletBtn.title = 'Klik za profil';
+    walletBtn.onclick = () => ProfilePanel?.openProfilePanel?.(currentSessionId);
 }
 
 async function loadIncomingDeliveries() {
