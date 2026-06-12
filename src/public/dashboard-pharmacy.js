@@ -172,20 +172,34 @@ async function receiveDelivery(deliveryId) {
 
         const data = await response.json();
         if (!response.ok) {
+            if (response.status === 422 && data.counterfeitAlert) {
+                throw new Error(formatCounterfeitError(data));
+            }
             throw new Error(data.error || 'Napaka pri sprejemu dostave');
         }
 
         if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
-            await BlockchainMetaMask.signHandoffAndConfirm(
+            const chainResult = await BlockchainMetaMask.signHandoffAndConfirm(
                 currentSessionId,
                 data.chainHandoff,
                 'RECEIVED_AT_PHARMACY'
             );
+            if (!chainResult?.txHash) {
+                throw new Error('MetaMask handoff RECEIVED_AT_PHARMACY ni potrjen.');
+            }
+        } else if (data.chainHandoff?.needsBlockchain) {
+            throw new Error('Potrdite RECEIVED_AT_PHARMACY v MetaMask (Sepolia).');
         }
 
         let msg = data.message || 'Dostava sprejeta.';
         if (data.verification) msg += '\n\n' + formatVerificationAlert(data.verification);
         alert(msg);
+
+        await promptPartnerReputation({
+            sessionId: currentSessionId,
+            deliveryId,
+            partnerWallet: data.partnerWallet
+        });
 
         await loadIncomingDeliveries();
         await loadMyInventory();

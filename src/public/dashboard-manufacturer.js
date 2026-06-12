@@ -253,6 +253,7 @@ async function createMedicine() {
         const medicine = data.medicine || data;
         const warnings = data.warnings || [];
 
+        let blockchainConfirmed = false;
         if (data.needsBlockchain && medicine.ipfsHash && window.BlockchainMetaMask) {
             try {
                 btn.textContent = '⏳ MetaMask (Sepolia)...';
@@ -263,6 +264,7 @@ async function createMedicine() {
                 );
                 medicine.blockchainTxHash = chainResult.txHash;
                 medicine.blockchainStatus = 'MANUFACTURED';
+                blockchainConfirmed = Boolean(chainResult.txHash);
             } catch (chainErr) {
                 warnings.push(`Blockchain: ${chainErr.message}`);
                 showError('create-error', `VC/IPFS OK, blockchain ni uspel: ${chainErr.message}`);
@@ -274,9 +276,13 @@ async function createMedicine() {
             showError('create-error', `Zdravilo je v bazi, vendar brez IPFS: ${detail}. Preveri GET /api/system/status in src/.env (Pinata), nato docker compose restart app.`);
         }
 
-        let successMsg = data.fullyIntegrated
-            ? '✓ Zdravilo ustvarjeno (Walt.id VC + IPFS + blockchain)!'
-            : '⚠ Zdravilo shranjeno — nekateri koraki niso uspeli:';
+        const coreOk = medicine.vcSigned && medicine.ipfsHash;
+        const allOk = coreOk && (blockchainConfirmed || !data.needsBlockchain);
+        let successMsg = allOk
+            ? '✓ Zdravilo ustvarjeno (Walt.id VC + IPFS' + (blockchainConfirmed ? ' + blockchain)' : ')')
+            : (coreOk && data.needsBlockchain && !blockchainConfirmed
+                ? '⚠ VC in IPFS OK — potrdite še registerMedicine v MetaMask (Sepolia):'
+                : '⚠ Zdravilo shranjeno — nekateri koraki niso uspeli:');
 
         if (medicine.vcSigned) successMsg += '<br>• Podpisani VC (issuer-api)';
         if (medicine.ipfsHash) {
@@ -288,8 +294,11 @@ async function createMedicine() {
                 || `https://sepolia.etherscan.io/tx/${medicine.blockchainTxHash}`;
             successMsg += `<br>• TX: <a href="${ex}" target="_blank" rel="noopener">Etherscan</a> <code>${medicine.blockchainTxHash.slice(0, 20)}…</code>`;
         }
-        if (warnings.length && !data.fullyIntegrated) {
-            successMsg += `<br><small>${warnings.join('<br>')}</small>`;
+        const pendingWarnings = warnings.filter((w) =>
+            !blockchainConfirmed || !w.includes('registerMedicine')
+        );
+        if (pendingWarnings.length && !allOk) {
+            successMsg += `<br><small>${pendingWarnings.join('<br>')}</small>`;
         }
 
         if (medicine.ipfsHash) {
@@ -350,14 +359,19 @@ async function sendToDistributor() {
 
         if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
             btn.textContent = '⏳ MetaMask...';
-            await BlockchainMetaMask.signHandoffAndConfirm(
+            const chainResult = await BlockchainMetaMask.signHandoffAndConfirm(
                 currentSessionId,
                 data.chainHandoff,
                 'SENT_TO_DISTRIBUTOR'
             );
+            if (!chainResult?.txHash) {
+                throw new Error('MetaMask handoff SENT_TO_DISTRIBUTOR ni potrjen — distributer ne bo mogel prevzeti pošiljke.');
+            }
+        } else if (data.chainHandoff?.needsBlockchain) {
+            throw new Error('Potrdite SENT_TO_DISTRIBUTOR v MetaMask (Sepolia).');
         }
 
-        showSuccess('delivery-success', `✓ Poslano distributorju ${distributorMap[targetDistributor]}`);
+        showSuccess('delivery-success', `✓ Poslano distributorju ${distributorMap[targetDistributor]} (VC + veriga)`);
         document.getElementById('delivery-medicine').value = '';
         document.getElementById('delivery-quantity').value = '1';
         document.getElementById('target-distributor').value = '';
