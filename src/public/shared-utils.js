@@ -125,3 +125,50 @@ function formatVerificationAlert(verification) {
     if (ipfs) lines.push(ipfs.accessible ? `✓ IPFS dostopen` : `⚠ IPFS: ${ipfs.message || ipfs.error || 'ni dostopen'}`);
     return lines.join('\n');
 }
+
+function formatCounterfeitError(data) {
+    const lines = [data.error || 'Prevzem zavrnjen'];
+    if (Array.isArray(data.reasons)) {
+        data.reasons.forEach((r) => lines.push(`• ${r}`));
+    }
+    if (Array.isArray(data.nextSteps) && data.nextSteps.length > 0) {
+        lines.push('', 'Kaj storiti:');
+        data.nextSteps.forEach((s) => lines.push(`→ ${s}`));
+    }
+    return lines.join('\n');
+}
+
+async function promptPartnerReputation({ sessionId, deliveryId, partnerWallet }) {
+    if (!partnerWallet || !deliveryId || !sessionId) return;
+    const ratingStr = window.prompt(
+        'Ocenite partnerja (1–5, Enter za preskok):',
+        '5'
+    );
+    if (ratingStr === null || ratingStr.trim() === '') return;
+
+    const rating = parseInt(ratingStr, 10);
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+        alert('Neveljavna ocena — preskočeno.');
+        return;
+    }
+
+    const comment = window.prompt('Kratki komentar (opcijsko):', '') || '';
+
+    try {
+        const res = await fetch('/api/reputation/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sessionId,
+                deliveryId,
+                reviewedWallet: partnerWallet,
+                rating,
+                comment
+            })
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || 'Napaka pri shranjevanju ocene');
+    } catch (err) {
+        console.warn('Reputation submit:', err.message);
+    }
+}

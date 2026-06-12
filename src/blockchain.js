@@ -141,7 +141,9 @@ const CONTRACT_ABI = [
     }
 ];
 
-const SEPOLIA_CHAIN_ID = 11155111;
+/** Sepolia = 11155111, Anvil lokalno = 31337 (nastavi CHAIN_ID v .env) */
+const CHAIN_ID = Number(process.env.CHAIN_ID || 11155111);
+const SEPOLIA_CHAIN_ID = CHAIN_ID;
 
 let provider = null;
 let readContract = null;
@@ -243,13 +245,14 @@ async function getMedicineHandoffsFromBlockchain(medicineId) {
 function getBlockchainConfig() {
     return {
         contractAddress,
-        chainId: SEPOLIA_CHAIN_ID,
+        chainId: CHAIN_ID,
         abi: CONTRACT_ABI
     };
 }
 
 export {
     CONTRACT_ABI,
+    CHAIN_ID,
     SEPOLIA_CHAIN_ID,
     initializeBlockchainReadOnly,
     getUserFromBlockchain,

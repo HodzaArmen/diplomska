@@ -1,9 +1,7 @@
 /**
  * blockchain-metamask.js — MetaMask podpis za SupplyChain (msg.sender = pravi udeleženec)
+ * Omrežje (Sepolia / Anvil) pride iz GET /api/blockchain/config
  */
-
-const SEPOLIA_CHAIN_ID = 11155111;
-const SEPOLIA_CHAIN_ID_HEX = '0xaa36a7';
 
 let _config = null;
 let _contract = null;
@@ -18,7 +16,10 @@ async function loadBlockchainConfig() {
     if (!data.success || !data.contractAddress) {
         throw new Error(data.error || 'Manjka CONTRACT_ADDRESS');
     }
-    _config = data;
+    _config = {
+        ...data,
+        chainIdHex: data.chainIdHex || `0x${Number(data.chainId).toString(16)}`
+    };
     return _config;
 }
 
@@ -38,37 +39,46 @@ async function getConnectedAccount() {
     return accounts[0];
 }
 
-async function ensureSepoliaNetwork() {
+async function ensureTargetNetwork() {
+    const config = await loadBlockchainConfig();
     const provider = await getMetaMaskProvider();
-    const chainId = await provider.request({ method: 'eth_chainId' });
-    if (chainId === SEPOLIA_CHAIN_ID_HEX) return;
+    const current = await provider.request({ method: 'eth_chainId' });
+    if (current.toLowerCase() === config.chainIdHex.toLowerCase()) return;
+
+    const rpcUrl = config.rpcUrl || 'http://127.0.0.1:8545';
+    const networkName = config.network || `Chain ${config.chainId}`;
 
     try {
         await provider.request({
             method: 'wallet_switchEthereumChain',
-            params: [{ chainId: SEPOLIA_CHAIN_ID_HEX }]
+            params: [{ chainId: config.chainIdHex }]
         });
     } catch (error) {
         if (error.code === 4902) {
             await provider.request({
                 method: 'wallet_addEthereumChain',
                 params: [{
-                    chainId: SEPOLIA_CHAIN_ID_HEX,
-                    chainName: 'Sepolia',
-                    nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
-                    rpcUrls: ['https://rpc.sepolia.org']
+                    chainId: config.chainIdHex,
+                    chainName: networkName,
+                    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+                    rpcUrls: [rpcUrl]
                 }]
             });
         } else {
-            throw new Error('Preklopite MetaMask na Sepolia testno omrežje');
+            throw new Error(`Preklopite MetaMask na ${networkName} (chainId ${config.chainId})`);
         }
     }
+}
+
+/** @deprecated uporabi ensureTargetNetwork */
+async function ensureSepoliaNetwork() {
+    return ensureTargetNetwork();
 }
 
 async function getContract() {
     if (_contract) return _contract;
     const config = await loadBlockchainConfig();
-    await ensureSepoliaNetwork();
+    await ensureTargetNetwork();
 
     const ethersLib = window.ethers;
     if (!ethersLib) {
@@ -83,6 +93,7 @@ async function getContract() {
 
 function resetContractCache() {
     _contract = null;
+    _config = null;
 }
 
 async function isUserRegisteredOnChain(walletAddress) {
@@ -217,8 +228,8 @@ async function signHandoffAndConfirm(sessionId, chainHandoff, historyAction) {
 }
 
 window.BlockchainMetaMask = {
-    SEPOLIA_CHAIN_ID,
     loadBlockchainConfig,
+    ensureTargetNetwork,
     ensureSepoliaNetwork,
     getConnectedAccount,
     isUserRegisteredOnChain,
