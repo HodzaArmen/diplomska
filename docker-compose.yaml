@@ -226,6 +226,8 @@ services:
     depends_on:
       app-postgres:
         condition: service_healthy
+      anvil:
+        condition: service_started
       issuer-api:
         condition: service_started
       verifier-api:
