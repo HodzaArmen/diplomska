@@ -172,13 +172,16 @@ async function receiveDelivery(deliveryId) {
 
         const data = await response.json();
         if (!response.ok) {
+            if (response.status === 409 && data.chainPending) {
+                throw new Error(formatChainPendingError(data));
+            }
             if (response.status === 422 && data.counterfeitAlert) {
                 throw new Error(formatCounterfeitError(data));
             }
             throw new Error(data.error || 'Napaka pri sprejemu dostave');
         }
 
-        if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
+        if (!data.chainHandoff?.autoSigned && data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
             const chainResult = await BlockchainMetaMask.signHandoffAndConfirm(
                 currentSessionId,
                 data.chainHandoff,
@@ -187,8 +190,8 @@ async function receiveDelivery(deliveryId) {
             if (!chainResult?.txHash) {
                 throw new Error('MetaMask handoff RECEIVED_AT_PHARMACY ni potrjen.');
             }
-        } else if (data.chainHandoff?.needsBlockchain) {
-            throw new Error('Potrdite RECEIVED_AT_PHARMACY v MetaMask (Sepolia).');
+        } else if (!data.chainHandoff?.autoSigned && data.chainHandoff?.needsBlockchain) {
+            throw new Error('Potrdite RECEIVED_AT_PHARMACY v MetaMask.');
         }
 
         let msg = data.message || 'Dostava sprejeta.';

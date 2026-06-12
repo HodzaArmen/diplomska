@@ -33,9 +33,21 @@
             <div id="my-inventory-list" class="card-body table-wrap"><p class="text-muted">Nalagam…</p></div>
         </section>
 
-        <section class="dashboard-card">
-            <header class="card-header"><h2>Pošlji v lekarno</h2></header>
-            <div id="forward-medicine-panel" class="card-body"><p class="text-muted">Izberite zdravilo iz inventarja.</p></div>
+        <section id="forward-send-section" class="dashboard-card" style="display:none;">
+            <header class="card-header">
+                <h2>Pošlji v lekarno</h2>
+                <p class="card-desc">Pošljete lahko samo količino, ki je še v inventarju.</p>
+            </header>
+            <div class="card-body form-row">
+                <div class="form-group"><label for="forward-medicine">Zdravilo</label><select id="forward-medicine" class="form-control"><option value="">— Izberite zdravilo —</option></select></div>
+                <div class="form-group"><label for="forward-quantity">Količina</label><input type="number" id="forward-quantity" class="form-control" min="1" value="1"></div>
+                <div class="form-group"><label for="target-pharmacy">Lekarna</label><select id="target-pharmacy" class="form-control"><option value="">— Izberite lekarno —</option></select></div>
+            </div>
+            <div class="card-body card-body-actions">
+                <button id="btn-send-forward" class="btn btn-primary" type="button">Pošlji</button>
+                <p id="forward-error" class="error-message" style="display:none;"></p>
+                <p id="forward-success" class="success-message" style="display:none;"></p>
+            </div>
         </section>
 
         <section class="dashboard-card">
@@ -49,6 +61,7 @@
     <script src="auth-utils.js"></script>
     <script src="blockchain-metamask.js"></script>
     <script src="shared-utils.js"></script>
+    <script src="send-shipment.js"></script>
     <script src="dashboard-common.js"></script>
     <script src="medicine-detail.js"></script>
     <script src="dashboard-distributor.js"></script>

@@ -1,5 +1,8 @@
 /**
- * Auth: MetaMask → Prijava / Registracija (en email za vse)
+ * app.js - Frontend logic for user authentication and MetaMask integration
+ * Handles user registration, login, session management, and wallet connection
+ * Communicates with backend API for authentication and user info
+ * Manages UI state for authentication flow and error handling
  */
 
 let currentUser = null;

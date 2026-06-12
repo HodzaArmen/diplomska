@@ -55,14 +55,20 @@ function labelMedicineChainStatus(status) {
 
 /** Človeški opis zaloge proizvajalca */
 function formatManufacturerStockStatus(m) {
-    const total = m.quantity ?? 0;
-    const available = m.available_quantity ?? total;
+    const available = m.available_quantity ?? 0;
     const pending = m.pending_quantity ?? 0;
     const atDist = m.at_distributor_quantity ?? 0;
+    const inTransit = m.in_transit_to_pharmacy ?? 0;
+    const delivered = m.delivered_to_pharmacy ?? 0;
+    const pendingMeta = parseInt(m.pending_metamask_quantity ?? 0, 10);
     const parts = [];
     if (available > 0) parts.push(`${available} na zalogi`);
-    if (pending > 0) parts.push(`${pending} čaka pri distributorju`);
+    if (pendingMeta > 0) parts.push(`${pendingMeta} čaka MetaMask`);
+    if (pending > pendingMeta) parts.push(`${pending - pendingMeta} čaka prevzem`);
+    else if (pending > 0 && pendingMeta === 0) parts.push(`${pending} čaka prevzem`);
     if (atDist > 0) parts.push(`${atDist} pri distributorju`);
+    if (inTransit > 0) parts.push(`${inTransit} v dostavi v lekarno`);
+    if (delivered > 0) parts.push(`${delivered} v lekarni`);
     if (parts.length === 0) return 'Vse poslano';
     return parts.join(' · ');
 }
@@ -135,6 +141,23 @@ function formatCounterfeitError(data) {
         lines.push('', 'Kaj storiti:');
         data.nextSteps.forEach((s) => lines.push(`→ ${s}`));
     }
+    return lines.join('\n');
+}
+
+function formatChainPendingError(data) {
+    const lines = [data.error || 'Manjkajo potrditve na verigi'];
+    if (Array.isArray(data.reasons)) {
+        data.reasons.forEach((r) => {
+            if (!String(r).startsWith('Potrdite')) lines.push(`• ${r}`);
+        });
+    }
+    const steps = data.nextSteps
+        || (Array.isArray(data.reasons) ? data.reasons.filter((r) => String(r).startsWith('Potrdite')) : []);
+    if (steps.length > 0) {
+        lines.push('', 'Kaj mora storiti proizvajalec / distributer:');
+        steps.forEach((s) => lines.push(`→ ${s}`));
+    }
+    lines.push('', 'To ni ponaredek — pošiljka še ni popolnoma potrjena v MetaMask.');
     return lines.join('\n');
 }
 

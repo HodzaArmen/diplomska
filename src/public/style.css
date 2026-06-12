@@ -1078,3 +1078,219 @@ body.dashboard-page {
     font-size: 0.8rem;
     margin: 0.25rem 0 0.5rem;
 }
+
+/* ===== MEDICINE DETAIL — UX v2 ===== */
+.detail-trust-banner {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    padding: 0.85rem 1rem;
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+}
+
+.detail-trust-banner--chain {
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+    border: 1px solid #93c5fd;
+}
+
+.detail-trust-banner--warn {
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+}
+
+.detail-trust-banner p {
+    margin: 0.2rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.detail-trust-icon {
+    font-size: 1.25rem;
+    line-height: 1;
+}
+
+.detail-focus-box {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 0.65rem 1rem;
+    margin-bottom: 1rem;
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    border-radius: var(--radius);
+}
+
+.detail-focus-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #166534;
+    font-weight: 600;
+}
+
+.detail-section {
+    margin-bottom: 1rem;
+}
+
+.detail-section--primary {
+    margin-bottom: 1.25rem;
+}
+
+.detail-section-title {
+    font-size: 0.95rem;
+    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+}
+
+.detail-chain-card {
+    background: white;
+    border: 2px solid #3b82f6;
+    border-radius: var(--radius);
+    padding: 1rem 1.1rem;
+    box-shadow: 0 1px 3px rgba(59, 130, 246, 0.12);
+}
+
+.detail-chain-empty {
+    border-color: var(--border-color);
+    box-shadow: none;
+}
+
+.detail-chain-lead {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.75rem;
+}
+
+.journey-stepper {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.journey-step {
+    display: flex;
+    gap: 0.75rem;
+    padding-bottom: 1rem;
+    position: relative;
+}
+
+.journey-step:not(.journey-step--last)::before {
+    content: '';
+    position: absolute;
+    left: 1.1rem;
+    top: 2.25rem;
+    bottom: 0;
+    width: 2px;
+    background: #bfdbfe;
+}
+
+.journey-marker {
+    flex-shrink: 0;
+    width: 2.25rem;
+    height: 2.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #eff6ff;
+    border: 2px solid #3b82f6;
+    border-radius: 50%;
+    font-size: 1rem;
+    z-index: 1;
+}
+
+.journey-body {
+    flex: 1;
+    min-width: 0;
+    padding-top: 0.1rem;
+}
+
+.journey-title-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    margin-bottom: 0.2rem;
+}
+
+.journey-title {
+    font-size: 0.95rem;
+}
+
+.journey-parties {
+    font-size: 0.85rem;
+    margin: 0.15rem 0;
+}
+
+.journey-qty {
+    font-weight: 600;
+    color: #1e40af;
+}
+
+.journey-time,
+.journey-vcref,
+.journey-delivery-id {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin: 0.1rem 0;
+}
+
+.detail-cards-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.detail-section--chain {
+    background: #f8fafc;
+    border-radius: var(--radius);
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--border-color);
+}
+
+.detail-chain-state .detail-kv {
+    margin-bottom: 0.35rem;
+}
+
+.chain-status-pill {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    background: #dbeafe;
+    color: #1e40af;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.detail-chain-status {
+    margin-top: 0.35rem;
+}
+
+.detail-summary--compact {
+    margin-bottom: 0.75rem;
+    background: #f8fafc;
+}
+
+.detail-accordion-hint {
+    font-size: 0.8rem;
+    margin: 0 0 0.75rem;
+}
+
+.delivery-chip-note {
+    display: block;
+    font-size: 0.72rem;
+    margin-top: 0.2rem;
+}
+
+.chain-pending-hint {
+    margin-top: 0.75rem;
+    padding: 0.65rem 0.85rem;
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    color: #92400e;
+}

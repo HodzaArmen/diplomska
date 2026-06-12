@@ -88,9 +88,49 @@ async function loadPharmacies() {
         pharmacies.forEach(p => {
             pharmacyMap[p.walletAddress] = p.name;
         });
+        updatePharmacySelect();
     } catch (error) {
         console.error('Error loading pharmacies:', error);
     }
+}
+
+function updatePharmacySelect() {
+    const select = document.getElementById('target-pharmacy');
+    if (!select) return;
+    select.innerHTML = '<option value="">— Izberite lekarno —</option>';
+    pharmacies.forEach((p) => {
+        const option = document.createElement('option');
+        option.value = p.walletAddress;
+        option.textContent = p.name;
+        select.appendChild(option);
+    });
+}
+
+function updateForwardMedicineSelect() {
+    updateShipmentMedicineSelect(
+        document.getElementById('forward-medicine'),
+        myInventory.map((m) => ({
+            ...m,
+            medicine_id: m.medicine_id,
+            available_quantity: m.available_quantity
+        })),
+        { placeholder: '— Izberite zdravilo —', preserveValue: true }
+    );
+}
+
+function updateForwardSendSectionVisibility() {
+    const section = document.getElementById('forward-send-section');
+    if (!section) return;
+    const hasStock = myInventory.some((m) => (m.available_quantity ?? 0) > 0);
+    section.style.display = hasStock ? '' : 'none';
+}
+
+async function fetchMyInventory() {
+    const response = await fetch(`/api/distributor/my-inventory?sessionId=${encodeURIComponent(currentSessionId)}`);
+    if (!response.ok) throw new Error('Napaka pri nalaganju inventarja');
+    const data = await response.json();
+    myInventory = data.inventory || [];
+    return myInventory;
 }
 
 function updateWalletStatus() {
@@ -119,9 +159,14 @@ async function loadIncomingDeliveries() {
 
         const data = await response.json();
         const deliveries = data.deliveries || [];
+        const pendingChain = data.pendingChainUnconfirmed ?? 0;
 
         if (deliveries.length === 0) {
-            listDiv.innerHTML = '<p class="text-muted">Ni novih pošiljk od proizvajalcev...</p>';
+            let html = '<p class="text-muted">Ni pošiljk pripravljenih za prevzem.</p>';
+            if (pendingChain > 0) {
+                html += `<p class="chain-pending-hint">⏳ ${pendingChain} pošiljk čaka na MetaMask potrditev pri proizvajalcu (SENT_TO_DISTRIBUTOR). Ko proizvajalec potrdi, se bodo prikazale tukaj.</p>`;
+            }
+            listDiv.innerHTML = html;
             return;
         }
 
@@ -183,13 +228,16 @@ async function receiveFromManufacturer(deliveryId) {
 
         const data = await response.json();
         if (!response.ok) {
+            if (response.status === 409 && data.chainPending) {
+                throw new Error(formatChainPendingError(data));
+            }
             if (response.status === 422 && data.counterfeitAlert) {
                 throw new Error(formatCounterfeitError(data));
             }
             throw new Error(data.error || 'Napaka pri sprejemu');
         }
 
-        if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
+        if (!data.chainHandoff?.autoSigned && data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
             const chainResult = await BlockchainMetaMask.signHandoffAndConfirm(
                 currentSessionId,
                 data.chainHandoff,
@@ -198,8 +246,8 @@ async function receiveFromManufacturer(deliveryId) {
             if (!chainResult?.txHash) {
                 throw new Error('MetaMask handoff RECEIVED_BY_DISTRIBUTOR ni potrjen.');
             }
-        } else if (data.chainHandoff?.needsBlockchain) {
-            throw new Error('Potrdite RECEIVED_BY_DISTRIBUTOR v MetaMask (Sepolia).');
+        } else if (!data.chainHandoff?.autoSigned && data.chainHandoff?.needsBlockchain) {
+            throw new Error('Potrdite RECEIVED_BY_DISTRIBUTOR v MetaMask.');
         }
 
         let msg = data.message || 'Pošiljka sprejeta.';
@@ -221,15 +269,12 @@ async function receiveFromManufacturer(deliveryId) {
 async function loadMyInventory() {
     const listDiv = document.getElementById('my-inventory-list');
     try {
-        const response = await fetch(`/api/distributor/my-inventory?sessionId=${encodeURIComponent(currentSessionId)}`);
-        if (!response.ok) throw new Error('Napaka pri nalaganju inventarja');
-
-        const data = await response.json();
-        myInventory = data.inventory || [];
+        await fetchMyInventory();
+        updateForwardSendSectionVisibility();
 
         if (myInventory.length === 0) {
             listDiv.innerHTML = '<p class="text-muted">Inventar je prazen. Najprej sprejmite pošiljko od proizvajalca.</p>';
-            document.getElementById('forward-medicine-panel').innerHTML = '';
+            updateForwardMedicineSelect();
             return;
         }
 
@@ -253,12 +298,7 @@ async function loadMyInventory() {
                             <td>${formatDisplayDate(m.expiry_date)}</td>
                             <td>
                                 <button type="button" class="btn-small btn-details" data-medicine-id="${escapeHtml(m.medicine_id)}">Pregled</button>
-                                <button class="btn-small btn-forward"
-                                    data-medicine-id="${escapeHtml(m.medicine_id)}"
-                                    data-medicine-name="${escapeHtml(m.name)}"
-                                    data-quantity="${m.available_quantity}">
-                                    🚚 Pošlji
-                                </button>
+                                <button type="button" class="btn-small btn-forward" data-medicine-id="${escapeHtml(m.medicine_id)}">🚚 Pošlji</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -266,13 +306,16 @@ async function loadMyInventory() {
             </table>
         `;
 
-        listDiv.querySelectorAll('.btn-forward').forEach(btn => {
+        updateForwardMedicineSelect();
+
+        listDiv.querySelectorAll('.btn-forward').forEach((btn) => {
             btn.addEventListener('click', () => {
-                showForwardPanel(
-                    btn.dataset.medicineId,
-                    btn.dataset.medicineName,
-                    parseInt(btn.dataset.quantity, 10)
-                );
+                const select = document.getElementById('forward-medicine');
+                if (select) {
+                    select.value = btn.dataset.medicineId;
+                    select.dispatchEvent(new Event('change'));
+                }
+                document.getElementById('forward-medicine')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             });
         });
         listDiv.querySelectorAll('.btn-details').forEach((btn) => {
@@ -286,92 +329,63 @@ async function loadMyInventory() {
     }
 }
 
-function showForwardPanel(medicineId, medicineName, availableQuantity) {
-    const forwardDiv = document.getElementById('forward-medicine-panel');
-
-    let pharmacyOptions = '<option value="">-- Izberite lekarno --</option>';
-    if (pharmacies.length === 0) {
-        pharmacyOptions = '<option value="" disabled>Ni registriranih lekarn</option>';
-    } else {
-        pharmacies.forEach(p => {
-            pharmacyOptions += `<option value="${p.walletAddress}">${escapeHtml(p.name)}</option>`;
-        });
-    }
-
-    forwardDiv.innerHTML = `
-        <h3>🚚 Pošlji v lekarno: ${escapeHtml(medicineName)}</h3>
-        <div class="form-group">
-            <label for="forward-quantity">Količina (max ${availableQuantity})</label>
-            <input type="number" id="forward-quantity" class="form-control" min="1" max="${availableQuantity}" value="${availableQuantity}">
-        </div>
-        <div class="form-group">
-            <label for="target-pharmacy">Ciljna lekarna</label>
-            <select id="target-pharmacy" class="form-control">${pharmacyOptions}</select>
-        </div>
-        <button id="btn-confirm-forward" class="btn btn-primary">📦 Potrdi pošiljko</button>
-        <p id="forward-error" class="error-message" style="display:none;"></p>
-        <p id="forward-success" class="success-message" style="display:none;"></p>
-    `;
-
-    document.getElementById('btn-confirm-forward').addEventListener('click', () => {
-        forwardMedicineToPharmacy(medicineId);
-    });
-}
-
-async function forwardMedicineToPharmacy(medicineId) {
+async function forwardMedicineToPharmacy() {
     const errorEl = document.getElementById('forward-error');
     const successEl = document.getElementById('forward-success');
     errorEl.style.display = 'none';
     successEl.style.display = 'none';
 
     try {
+        const medicineSelect = document.getElementById('forward-medicine');
+        const medicineId = medicineSelect?.value?.trim();
         const quantity = parseInt(document.getElementById('forward-quantity').value, 10);
-        const targetPharmacyWallet = document.getElementById('target-pharmacy').value;
+        const targetPharmacyWallet = document.getElementById('target-pharmacy')?.value?.trim();
 
-        if (!quantity || quantity < 1) {
-            throw new Error('Vnesite veljavno količino');
-        }
-        if (!targetPharmacyWallet) {
-            throw new Error('Izberite lekarno');
-        }
+        if (!medicineId) throw new Error('Izberite zdravilo');
+        if (!quantity || quantity < 1) throw new Error('Vnesite veljavno količino');
+        if (!targetPharmacyWallet) throw new Error('Izberite lekarno');
 
-        const response = await fetch('/api/distributor/send-to-pharmacy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+        await fetchMyInventory();
+        const maxQty = getAvailableFromList(myInventory, medicineId);
+
+        if (maxQty <= 0) throw new Error('Ni razpoložljive zaloge');
+        if (quantity > maxQty) throw new Error(`Na voljo je samo ${maxQty} enot v inventarju`);
+
+        const btn = document.getElementById('btn-send-forward');
+        btn.disabled = true;
+        btn.textContent = '⏳ Pošiljam...';
+
+        await executeShipmentWithBlockchain({
+            sessionId: currentSessionId,
+            apiUrl: '/api/distributor/send-to-pharmacy',
+            body: {
                 sessionId: currentSessionId,
                 medicineId,
                 quantity,
                 targetPharmacyName: pharmacyMap[targetPharmacyWallet] || '',
                 targetPharmacyWallet
-            })
+            },
+            chainHistoryAction: 'FORWARDED_TO_PHARMACY',
+            onProgress: (msg) => { btn.textContent = msg; }
         });
-
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || 'Napaka pri pošiljanju');
-        }
-
-        if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
-            const chainResult = await BlockchainMetaMask.signHandoffAndConfirm(
-                currentSessionId,
-                data.chainHandoff,
-                'FORWARDED_TO_PHARMACY'
-            );
-            if (!chainResult?.txHash) {
-                throw new Error('MetaMask handoff FORWARDED_TO_PHARMACY ni potrjen — lekarna ne bo mogla prevzeti.');
-            }
-        } else if (data.chainHandoff?.needsBlockchain) {
-            throw new Error('Potrdite FORWARDED_TO_PHARMACY v MetaMask (Sepolia).');
-        }
 
         successEl.textContent = `✓ Poslano v ${pharmacyMap[targetPharmacyWallet]} (VC + veriga)`;
         successEl.style.display = 'block';
+        medicineSelect.value = '';
+        document.getElementById('forward-quantity').value = '1';
+        document.getElementById('target-pharmacy').value = '';
         await loadMyInventory();
         await loadOutgoingDeliveries();
     } catch (error) {
         errorEl.textContent = error.message;
         errorEl.style.display = 'block';
+        await loadMyInventory();
+    } finally {
+        const btn = document.getElementById('btn-send-forward');
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Pošlji';
+        }
     }
 }
 
@@ -427,6 +441,12 @@ async function loadOutgoingDeliveries() {
 }
 
 function attachEventListeners() {
+    document.getElementById('btn-send-forward')?.addEventListener('click', forwardMedicineToPharmacy);
+    document.getElementById('forward-medicine')?.addEventListener('change', (e) => {
+        const maxQty = readShipmentMaxQuantity(e.target);
+        clampShipmentQuantityInput(document.getElementById('forward-quantity'), maxQty);
+    });
+
     document.getElementById('btn-back-home').addEventListener('click', async () => {
         try {
             if (currentSessionId) {

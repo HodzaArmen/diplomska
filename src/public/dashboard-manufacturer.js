@@ -128,6 +128,12 @@ async function loadDistributors() {
 
         distributorMap = {};
         const select = document.getElementById('target-distributor');
+        if (select.options.length === 0) {
+            const ph = document.createElement('option');
+            ph.value = '';
+            ph.textContent = '— Izberite distributorja —';
+            select.appendChild(ph);
+        }
         while (select.options.length > 1) {
             select.remove(1);
         }
@@ -153,20 +159,26 @@ async function loadDistributors() {
 }
 
 function updateDeliveryMedicineSelect() {
-    const select = document.getElementById('delivery-medicine');
-    while (select.options.length > 1) {
-        select.remove(1);
-    }
+    updateShipmentMedicineSelect(
+        document.getElementById('delivery-medicine'),
+        medicines,
+        { placeholder: '— Izberite zdravilo —', preserveValue: true }
+    );
+}
 
-    medicines.forEach(m => {
-        const medicineId = m.medicine_id || m.medicineId;
-        const available = m.available_quantity ?? m.quantity;
-        const option = document.createElement('option');
-        option.value = medicineId;
-        option.textContent = `${m.name} (${medicineId}) — ${available} na voljo`;
-        option.dataset.maxQuantity = available;
-        select.appendChild(option);
-    });
+function updateSendDeliverySectionVisibility() {
+    const section = document.getElementById('send-delivery-section');
+    if (!section) return;
+    const hasStock = medicines.some((m) => (m.available_quantity ?? 0) > 0);
+    section.style.display = hasStock ? '' : 'none';
+}
+
+async function fetchMyMedicines() {
+    const response = await fetch(`/api/medicines/my-medicines?sessionId=${encodeURIComponent(currentSessionId)}`);
+    if (!response.ok) throw new Error('Napaka pri nalaganju zdravil');
+    const data = await response.json();
+    medicines = data.medicines || [];
+    return medicines;
 }
 
 function attachEventListeners() {
@@ -195,6 +207,10 @@ function attachEventListeners() {
 
     document.getElementById('btn-create-medicine').addEventListener('click', createMedicine);
     document.getElementById('btn-send-delivery').addEventListener('click', sendToDistributor);
+    document.getElementById('delivery-medicine')?.addEventListener('change', (e) => {
+        const maxQty = readShipmentMaxQuantity(e.target);
+        clampShipmentQuantityInput(document.getElementById('delivery-quantity'), maxQty);
+    });
 }
 
 async function createMedicine() {
@@ -245,7 +261,13 @@ async function createMedicine() {
             })
         });
 
-        const data = await response.json();
+        const raw = await response.text();
+        let data;
+        try {
+            data = JSON.parse(raw);
+        } catch {
+            throw new Error(raw.includes('Too many') ? 'Preveč zahtev — počakajte in poskusite znova' : raw.slice(0, 200));
+        }
         if (!response.ok) {
             throw new Error(data.error || 'Napaka pri ustvarjanju zdravila');
         }
@@ -253,8 +275,8 @@ async function createMedicine() {
         const medicine = data.medicine || data;
         const warnings = data.warnings || [];
 
-        let blockchainConfirmed = false;
-        if (data.needsBlockchain && medicine.ipfsHash && window.BlockchainMetaMask) {
+        let blockchainConfirmed = Boolean(data.blockchainAutoSigned || medicine.blockchainTxHash);
+        if (!data.blockchainAutoSigned && !blockchainConfirmed && data.needsBlockchain && medicine.ipfsHash && window.BlockchainMetaMask) {
             try {
                 btn.textContent = '⏳ MetaMask (Sepolia)...';
                 const chainResult = await BlockchainMetaMask.signMedicineAndConfirm(
@@ -281,7 +303,7 @@ async function createMedicine() {
         let successMsg = allOk
             ? '✓ Zdravilo ustvarjeno (Walt.id VC + IPFS' + (blockchainConfirmed ? ' + blockchain)' : ')')
             : (coreOk && data.needsBlockchain && !blockchainConfirmed
-                ? '⚠ VC in IPFS OK — potrdite še registerMedicine v MetaMask (Sepolia):'
+                ? '⚠ VC in IPFS OK — blockchain registracija ni uspela (preverite deploy pogodbe):'
                 : '⚠ Zdravilo shranjeno — nekateri koraki niso uspeli:');
 
         if (medicine.vcSigned) successMsg += '<br>• Podpisani VC (issuer-api)';
@@ -328,48 +350,46 @@ async function sendToDistributor() {
     try {
         clearMessages('delivery');
 
-        const medicineId = document.getElementById('delivery-medicine').value;
+        const medicineSelect = document.getElementById('delivery-medicine');
+        const medicineId = medicineSelect?.value?.trim();
         const quantity = parseInt(document.getElementById('delivery-quantity').value, 10);
-        const targetDistributor = document.getElementById('target-distributor').value;
+        const targetDistributor = document.getElementById('target-distributor')?.value?.trim();
 
-        if (!medicineId || !quantity || !targetDistributor) {
+        if (!medicineId || !quantity || quantity < 1 || !targetDistributor) {
             showError('delivery-error', 'Izberite zdravilo, količino in distributorja');
+            return;
+        }
+
+        await fetchMyMedicines();
+        const maxQty = getAvailableFromList(medicines, medicineId);
+
+        if (maxQty <= 0) {
+            showError('delivery-error', 'Ni razpoložljive zaloge za pošiljanje');
+            await loadMyMedicines();
+            return;
+        }
+        if (quantity > maxQty) {
+            showError('delivery-error', `Na voljo je samo ${maxQty} enot`);
             return;
         }
 
         const btn = document.getElementById('btn-send-delivery');
         btn.disabled = true;
+        btn.textContent = '⏳ Pošiljam...';
 
-        const response = await fetch('/api/medicines/add-to-delivery', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+        const data = await executeShipmentWithBlockchain({
+            sessionId: currentSessionId,
+            apiUrl: '/api/medicines/add-to-delivery',
+            body: {
                 sessionId: currentSessionId,
                 medicineId,
                 quantity,
                 targetDistributorName: distributorMap[targetDistributor] || '',
                 targetDistributorWallet: targetDistributor
-            })
+            },
+            chainHistoryAction: 'SENT_TO_DISTRIBUTOR',
+            onProgress: (msg) => { btn.textContent = msg; }
         });
-
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || 'Napaka pri pošiljanju distributorju');
-        }
-
-        if (data.chainHandoff?.needsBlockchain && window.BlockchainMetaMask) {
-            btn.textContent = '⏳ MetaMask...';
-            const chainResult = await BlockchainMetaMask.signHandoffAndConfirm(
-                currentSessionId,
-                data.chainHandoff,
-                'SENT_TO_DISTRIBUTOR'
-            );
-            if (!chainResult?.txHash) {
-                throw new Error('MetaMask handoff SENT_TO_DISTRIBUTOR ni potrjen — distributer ne bo mogel prevzeti pošiljke.');
-            }
-        } else if (data.chainHandoff?.needsBlockchain) {
-            throw new Error('Potrdite SENT_TO_DISTRIBUTOR v MetaMask (Sepolia).');
-        }
 
         showSuccess('delivery-success', `✓ Poslano distributorju ${distributorMap[targetDistributor]} (VC + veriga)`);
         document.getElementById('delivery-medicine').value = '';
@@ -378,19 +398,19 @@ async function sendToDistributor() {
         await loadMyMedicines();
     } catch (error) {
         showError('delivery-error', error.message);
+        await loadMyMedicines();
     } finally {
-        document.getElementById('btn-send-delivery').disabled = false;
+        const btn = document.getElementById('btn-send-delivery');
+        btn.disabled = false;
+        btn.textContent = 'Pošlji';
     }
 }
 
 async function loadMyMedicines() {
     try {
-        const response = await fetch(`/api/medicines/my-medicines?sessionId=${encodeURIComponent(currentSessionId)}`);
-        if (!response.ok) throw new Error('Napaka pri nalaganju zdravil');
-
-        const data = await response.json();
-        medicines = data.medicines || [];
+        await fetchMyMedicines();
         updateDeliveryMedicineSelect();
+        updateSendDeliverySectionVisibility();
 
         const listDiv = document.getElementById('medicines-list');
 
