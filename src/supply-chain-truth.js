@@ -103,6 +103,162 @@ async function verifyVcRecord(jwt, expectedIssuerDid, credentialType) {
     };
 }
 
+function entityFromWallet(walletMap, address) {
+    if (!address || address === '0x0000000000000000000000000000000000000000') {
+        return { name: '—', role: null, wallet: address || null, did: null };
+    }
+    const hit = walletMap.get(String(address).toLowerCase());
+    return {
+        name: hit?.name || `${String(address).slice(0, 6)}…${String(address).slice(-4)}`,
+        role: hit?.role || null,
+        wallet: address,
+        did: hit?.did || null
+    };
+}
+
+const JOURNEY_VERBS = {
+    MANUFACTURED: 'registriral zdravilo na verigi',
+    manufactured: 'registriral zdravilo na verigi',
+    SENT_TO_DISTRIBUTOR: 'odposlal k distributorju',
+    RECEIVED_BY_DISTRIBUTOR: 'prevzel pošiljko',
+    FORWARDED_TO_PHARMACY: 'poslal v lekarno',
+    RECEIVED_AT_PHARMACY: 'prevzel v lekarni',
+    COUNTERFEIT_ALERT: 'zavrnil prevzem (sum ponareka)'
+};
+
+/**
+ * Strukturirani koraki poti — vir: blockchain (+ registracija).
+ */
+export function buildJourneySteps({
+    onChainMedicine,
+    chainTimeline = [],
+    walletMap,
+    manufacturerName,
+    verifiedDeliveries = []
+}) {
+    const steps = [];
+    let stepNum = 1;
+
+    if (onChainMedicine?.medicineId) {
+        const mfg = entityFromWallet(walletMap, onChainMedicine.manufacturer);
+        steps.push({
+            step: stepNum++,
+            action: 'MANUFACTURED',
+            actionLabel: CHAIN_EVENT_LABELS.MANUFACTURED,
+            verb: JOURNEY_VERBS.MANUFACTURED,
+            actor: mfg,
+            counterparty: null,
+            quantity: null,
+            timestamp: onChainMedicine.createdAt
+                ? new Date(onChainMedicine.createdAt * 1000).toISOString()
+                : null,
+            proof: { source: 'blockchain', vcRef: null, ipfs: Boolean(onChainMedicine.ipfsHash) },
+            summary: `${mfg.name || manufacturerName || 'Proizvajalec'} je registriral zdravilo na verigi.`
+        });
+    }
+
+    for (const h of chainTimeline) {
+        const isReceive = h.action === 'RECEIVED_BY_DISTRIBUTOR' || h.action === 'RECEIVED_AT_PHARMACY';
+        const actorEntity = entityFromWallet(walletMap, isReceive ? h.counterparty : h.actor);
+        const counterEntity = entityFromWallet(walletMap, isReceive ? h.actor : h.counterparty);
+        const transportVc = verifiedDeliveries.find((d) => d.deliveryId === h.deliveryId);
+
+        let summary;
+        if (h.action === 'SENT_TO_DISTRIBUTOR') {
+            summary = `${actorEntity.name} je odposlal ${h.quantity || '?'} en k ${counterEntity.name}.`;
+        } else if (h.action === 'RECEIVED_BY_DISTRIBUTOR') {
+            summary = `${actorEntity.name} je prevzel ${h.quantity || '?'} en od ${counterEntity.name}.`;
+        } else if (h.action === 'FORWARDED_TO_PHARMACY') {
+            summary = `${actorEntity.name} je poslal ${h.quantity || '?'} en v lekarno ${counterEntity.name}.`;
+        } else if (h.action === 'RECEIVED_AT_PHARMACY') {
+            summary = `Lekarna ${actorEntity.name} je prevzela ${h.quantity || '?'} en od ${counterEntity.name}.`;
+        } else {
+            summary = `${actorEntity.name}: ${CHAIN_EVENT_LABELS[h.action] || h.action}`;
+        }
+
+        steps.push({
+            step: stepNum++,
+            action: h.action,
+            actionLabel: h.actionLabel || CHAIN_EVENT_LABELS[h.action] || h.action,
+            verb: JOURNEY_VERBS[h.action] || h.actionLabel,
+            actor: actorEntity,
+            counterparty: counterEntity.name !== '—' ? counterEntity : null,
+            quantity: h.quantity,
+            timestamp: h.timestamp,
+            deliveryId: h.deliveryId || null,
+            proof: {
+                source: 'blockchain',
+                vcRef: h.vcRef || null,
+                vcVerified: transportVc?.transportVcVerified ?? null,
+                ipfs: null
+            },
+            summary
+        });
+    }
+
+    return steps;
+}
+
+/** Kratka pot npr. "Krka → Distributer X → Lekarna Y" */
+export function buildJourneySummary(steps, manufacturerName) {
+    const names = [];
+    if (manufacturerName) names.push(manufacturerName);
+    for (const s of steps) {
+        if (s.action === 'SENT_TO_DISTRIBUTOR' && s.counterparty?.name) {
+            if (!names.includes(s.counterparty.name)) names.push(s.counterparty.name);
+        }
+        if (s.action === 'FORWARDED_TO_PHARMACY' && s.counterparty?.name) {
+            if (!names.includes(s.counterparty.name)) names.push(s.counterparty.name);
+        }
+        if (s.action === 'RECEIVED_AT_PHARMACY' && s.actor?.name) {
+            if (!names.includes(s.actor.name)) names.push(s.actor.name);
+        }
+    }
+    return names.length ? names.join(' → ') : null;
+}
+
+/** Javni (pacientski) pogled — brez wallet/DID/količin. */
+export function buildPublicTraceView(verified) {
+    const steps = (verified.journeySteps || []).map((s) => ({
+        step: s.step,
+        actionLabel: s.actionLabel,
+        summary: s.summary,
+        timestamp: s.timestamp,
+        actorName: s.actor?.name || '—',
+        actorRole: s.actor?.role || null,
+        counterpartyName: s.counterparty?.name || null,
+        verified: Boolean(s.proof?.vcRef || s.proof?.source === 'blockchain')
+    }));
+
+    return {
+        medicineId: verified.medicineId,
+        name: verified.name,
+        batchNumber: verified.batchNumber,
+        expiryDate: verified.expiryDate,
+        manufacturerName: verified.manufacturerName,
+        journeySummary: verified.journeySummary,
+        chainVerified: verified.onChainRegistered && (verified.journeySteps?.length > 0),
+        ipfsVerified: Boolean(verified.ipfsVerification?.accessible),
+        vcVerified: Boolean(verified.vcSigned),
+        trustLevel: verified.trustLevel,
+        steps,
+        disclaimer: 'Poenostavljen javni pregled porekla. Ne nadomešča uradnega FMD sistema JAZMP.'
+    };
+}
+
+function computeTrustLevel(verified) {
+    const checks = [
+        verified.vcSigned,
+        verified.ipfsVerification?.accessible,
+        verified.onChainRegistered,
+        verified.ipfsHashOnChain
+    ];
+    const passed = checks.filter(Boolean).length;
+    if (passed === 4) return 'high';
+    if (passed >= 2) return 'mid';
+    return 'low';
+}
+
 function chainHandoffToTimelineEvent(h, walletMap, deliveryQtyMap = null) {
     const isReceive = h.eventType === 'RECEIVED_BY_DISTRIBUTOR' || h.eventType === 'RECEIVED_AT_PHARMACY';
     let quantity = h.quantity || null;
@@ -305,7 +461,16 @@ export async function buildVerifiedMedicineView({
     const chainStatus = onChainMedicine?.status || null;
     const currentHolderLabel = walletLabel(walletMap, onChainMedicine?.currentHolder);
 
-    return {
+    const journeySteps = buildJourneySteps({
+        onChainMedicine,
+        chainTimeline,
+        walletMap,
+        manufacturerName: dbMedicine?.manufacturer_name,
+        verifiedDeliveries
+    });
+    const journeySummary = buildJourneySummary(journeySteps, dbMedicine?.manufacturer_name);
+
+    const baseView = {
         medicineId,
         name,
         batchNumber,
@@ -340,6 +505,8 @@ export async function buildVerifiedMedicineView({
             currentHolderDID: onChainMedicine?.currentHolderDID || null
         },
         supplyChainHistory: chainTimeline,
+        journeySteps,
+        journeySummary,
         deliveries: verifiedDeliveries,
         dataSources: {
             timeline: chainTimeline.length > 0 ? 'blockchain' : 'none',
@@ -347,10 +514,13 @@ export async function buildVerifiedMedicineView({
             transportVc: 'verifier-api',
             productData: ipfsHashOnChain ? 'ipfs-via-blockchain' : (ipfsHash ? 'ipfs-index' : 'none'),
             deliveriesIndex: 'postgres-inbox-only',
+            operationalNote: 'PostgreSQL hrani le operativni indeks pošiljek (inbox). Prikaz poti temelji na verigi, IPFS in VC.',
             note: chainTimeline.length === 0
                 ? 'Na verigi še ni handoff dogodkov. Po redeploy pogodbe in novih pošiljkah bo pot dobave prišla iz blockchaina.'
                 : 'Pot dobave in statusi iz blockchaina; VC preverjeni prek Walt.id Verifier API (tutorial OID4VP).',
             chainNetwork: process.env.CHAIN_NAME || 'Sepolia'
         }
     };
+    baseView.trustLevel = computeTrustLevel(baseView);
+    return baseView;
 }

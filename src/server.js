@@ -47,7 +47,7 @@ import {
     storeVerifierCallbackResult,
     decodeVcClaims
 } from './waltid-ssi.js';
-import { buildVerifiedMedicineView, vcJwtReference } from './supply-chain-truth.js';
+import { buildVerifiedMedicineView, buildPublicTraceView, vcJwtReference } from './supply-chain-truth.js';
 import {
     buildReceiveGateResult,
     validateChainPathForReceive,
@@ -76,6 +76,8 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 app.get('/manufacturer', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'manufacturer-dashboard.html')));
 app.get('/distributor', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'distributor-dashboard.html')));
 app.get('/pharmacy', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pharmacy-dashboard.html')));
+app.get('/regulator', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'regulator-dashboard.html')));
+app.get('/trace', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'trace.html')));
 app.get('/manufacturer-dashboard.html', (_req, res) => res.redirect(301, '/manufacturer'));
 app.get('/distributor-dashboard.html', (_req, res) => res.redirect(301, '/distributor'));
 app.get('/pharmacy-dashboard.html', (_req, res) => res.redirect(301, '/pharmacy'));
@@ -139,7 +141,7 @@ function isValidEmail(email) {
 }
 
 function isValidRole(role) {
-    return ['manufacturer', 'distributor', 'pharmacy'].includes(role.toLowerCase());
+    return ['manufacturer', 'distributor', 'pharmacy', 'regulator'].includes(role.toLowerCase());
 }
 
 function sanitizeInput(input) {
@@ -295,6 +297,10 @@ function parseStoredVcRecord(vcRaw) {
 }
 
 async function userCanAccessMedicine(wallet, role, medicineId) {
+    if (role === 'regulator') {
+        const r = await pool.query('SELECT 1 FROM medicines WHERE medicine_id = $1', [medicineId]);
+        return r.rows.length > 0;
+    }
     if (role === 'manufacturer') {
         const r = await pool.query(
             'SELECT 1 FROM medicines WHERE medicine_id = $1 AND manufacturer_wallet = $2',
@@ -708,7 +714,7 @@ app.post('/api/auth/connect-metamask', async (req, res) => {
         }
 
         if (!isValidRole(role)) {
-            return res.status(400).json({ error: 'Invalid role. Must be: manufacturer, distributor, or pharmacy' });
+            return res.status(400).json({ error: 'Invalid role. Must be: manufacturer, distributor, pharmacy, or regulator' });
         }
 
         if (!isValidEmail(email)) {
@@ -2928,6 +2934,73 @@ async function handleMedicineDetailsRequest(req, res) {
 // 14. Podrobnosti zdravila — vse vloge
 app.get('/api/medicines/:medicineId/details', handleMedicineDetailsRequest);
 app.get('/api/pharmacy/medicine-details/:medicineId', handleMedicineDetailsRequest);
+
+// JAZMP / regulator — read-only pregled vseh zdravil
+app.get('/api/regulator/medicines', async (req, res) => {
+    try {
+        const { sessionId } = req.query;
+        if (!sessionId || !(await isSessionValid(sessionId))) {
+            return res.status(401).json({ error: 'Neveljavna seja' });
+        }
+        const userResult = await pool.query(
+            'SELECT role FROM users WHERE session_id = $1',
+            [sessionId]
+        );
+        if (userResult.rows.length === 0 || userResult.rows[0].role !== 'regulator') {
+            return res.status(403).json({ error: 'Dostop samo za regulator (JAZMP)' });
+        }
+
+        const result = await pool.query(
+            `SELECT m.medicine_id, m.name, m.batch_number, m.quantity, m.expiry_date,
+                    m.blockchain_status, m.created_at, u.company_name AS manufacturer_name
+             FROM medicines m
+             JOIN users u ON m.manufacturer_wallet = u.wallet_address
+             ORDER BY m.created_at DESC`
+        );
+        res.json({ success: true, medicines: result.rows });
+    } catch (error) {
+        console.error('Regulator medicines error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Javni pregled porekla (pacient) — brez prijave
+const publicTraceLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.PUBLIC_TRACE_RATE_LIMIT_MAX || 120),
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (_req, res) => {
+        res.status(429).json({ error: 'Preveč zahtev — poskusite pozneje', code: 'RATE_LIMIT' });
+    }
+});
+
+app.get('/api/public/medicine-trace', publicTraceLimiter, async (req, res) => {
+    try {
+        const medicineId = sanitizeInput(req.query.medicineId || '');
+        const batch = sanitizeInput(req.query.batch || '');
+
+        if (!medicineId) {
+            return res.status(400).json({ error: 'Parameter medicineId je obvezen' });
+        }
+
+        const medicine = await buildMedicineDetailsResponse(medicineId, {
+            viewerRole: 'public',
+            viewerWallet: null
+        });
+        if (!medicine) {
+            return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+        }
+        if (batch && medicine.batchNumber && batch.toLowerCase() !== String(medicine.batchNumber).toLowerCase()) {
+            return res.status(404).json({ error: 'Serija se ne ujema s podatki v sistemu' });
+        }
+
+        res.json({ success: true, trace: buildPublicTraceView(medicine) });
+    } catch (error) {
+        console.error('Public trace error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // VC AI asistent — razlaga potrdil v kontekstu zdravila
 app.get('/api/medicines/:medicineId/vc-assistant', async (req, res) => {
