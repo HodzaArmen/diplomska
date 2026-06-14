@@ -86,7 +86,12 @@ function showAuthForm() {
 }
 
 function getDashboardUrl(role) {
-    return { manufacturer: '/manufacturer', distributor: '/distributor', pharmacy: '/pharmacy' }[role] || '/';
+    return {
+        manufacturer: '/manufacturer',
+        distributor: '/distributor',
+        pharmacy: '/pharmacy',
+        regulator: '/regulator'
+    }[role] || '/';
 }
 
 function redirectToRoleDashboard() {

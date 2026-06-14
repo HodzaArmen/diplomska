@@ -5,7 +5,8 @@
 const ROLE_LABELS = {
     manufacturer: 'proizvajalec',
     distributor: 'distributer',
-    pharmacy: 'lekarna'
+    pharmacy: 'lekarna',
+    regulator: 'JAZMP / regulator'
 };
 
 const TRUST_LAYER_HELP = {
@@ -46,6 +47,85 @@ function sourceBadge(source, label) {
 function detailRow(label, value) {
     if (value == null || value === '') return '';
     return `<div class="detail-kv"><span class="detail-k">${escapeHtml(label)}</span><span class="detail-v">${value}</span></div>`;
+}
+
+function roleBadge(role) {
+    if (!role) return '';
+    const cls = {
+        manufacturer: 'role-badge--mfg',
+        distributor: 'role-badge--dist',
+        pharmacy: 'role-badge--pharm',
+        regulator: 'role-badge--reg'
+    }[role] || '';
+    return `<span class="role-badge ${cls}">${escapeHtml(labelRole(role))}</span>`;
+}
+
+function renderJourneyPathBanner(medicine) {
+    const summary = medicine.journeySummary;
+    if (!summary) {
+        return `<div class="detail-trust-banner detail-trust-banner--warn">
+            <span class="detail-trust-icon">⚠</span>
+            <p><strong>Pot na verigi še ni popolna.</strong> Uradna zgodovina premikov še ni zabeležena na blockchainu.</p>
+        </div>`;
+    }
+    return `<div class="detail-trust-banner detail-trust-banner--chain">
+        <span class="detail-trust-icon">🔗</span>
+        <div>
+            <p class="journey-path-label">Uradna pot (veriga ${escapeHtml(medicine.dataSources?.chainNetwork || 'blockchain')})</p>
+            <p class="journey-path-summary"><strong>${escapeHtml(summary)}</strong></p>
+        </div>
+    </div>`;
+}
+
+function renderJourneyStepsTable(steps, compact = false) {
+    if (!steps?.length) {
+        return `<p class="text-muted">Na verigi še ni zabeleženih korakov poti.</p>`;
+    }
+    const rows = steps.map((s) => {
+        const who = `${escapeHtml(s.actor?.name || '—')} ${roleBadge(s.actor?.role)}`;
+        const toWhom = s.counterparty
+            ? `${escapeHtml(s.counterparty.name || '—')} ${roleBadge(s.counterparty.role)}`
+            : '—';
+        const proof = s.proof?.vcRef
+            ? '<span class="proof-ok" title="VC referenca na verigi">VC ✓</span>'
+            : (s.proof?.source === 'blockchain' ? '<span class="proof-ok">Veriga ✓</span>' : '—');
+        const tech = compact ? '' : `<td class="journey-proof">${proof}</td>`;
+
+        return `<tr>
+            <td class="journey-step-num">${s.step}</td>
+            <td><strong>${escapeHtml(s.actionLabel)}</strong><br><span class="text-muted journey-verb">${escapeHtml(s.verb || '')}</span></td>
+            <td>${who}</td>
+            <td>${toWhom}</td>
+            <td>${s.quantity != null ? `${s.quantity} en` : '—'}</td>
+            <td>${formatDisplayDateTime(s.timestamp)}</td>
+            ${tech}
+        </tr>
+        <tr class="journey-summary-row"><td colspan="${compact ? 6 : 7}">${escapeHtml(s.summary)}</td></tr>`;
+    }).join('');
+
+    const proofCol = compact ? '' : '<th>Dokaz</th>';
+    return `<table class="journey-table">
+        <thead><tr>
+            <th>#</th><th>Dogodek</th><th>Kdo</th><th>Komu</th><th>Kol.</th><th>Kdaj</th>${proofCol}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderPublicTraceLink(medicineId, batchNumber) {
+    const url = `${window.location.origin}/trace?medicineId=${encodeURIComponent(medicineId)}&batch=${encodeURIComponent(batchNumber || '')}`;
+    const qr = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(url)}`;
+    return `<div class="public-trace-box">
+        <h5>Javni pregled za pacienta</h5>
+        <p class="text-muted">Pacient lahko brez prijave preveri poreklo zdravila.</p>
+        <div class="public-trace-row">
+            <img src="${qr}" alt="QR koda" width="120" height="120" class="trace-qr">
+            <div>
+                <input type="text" class="form-control trace-url-input" readonly value="${escapeHtml(url)}">
+                <button type="button" class="btn btn-secondary btn-sm btn-copy-trace-url">Kopiraj povezavo</button>
+            </div>
+        </div>
+    </div>`;
 }
 
 function journeyStepIcon(eventType) {
@@ -108,14 +188,16 @@ function renderHumanOverview(medicine, highlightDelivery, chainNetwork) {
 
     let lead = `Zdravilo <strong>${escapeHtml(medicine.name)}</strong> (serija ${escapeHtml(medicine.batchNumber)}) je proizvedlo <strong>${escapeHtml(medicine.manufacturerName || '—')}</strong>.`;
 
-    if (highlightDelivery) {
-        lead += ` Pregledujete pošiljko <strong>${highlightDelivery.quantity} en</strong> (${labelDeliveryStatus(highlightDelivery.status)}): ${labelRole(highlightDelivery.sourceRole)} → ${labelRole(highlightDelivery.targetRole)}.`;
+    if (medicine.journeySummary) {
+        lead += ` Pot na verigi: <strong>${escapeHtml(medicine.journeySummary)}</strong>.`;
+    } else if (highlightDelivery) {
+        lead += ` Pregledujete pošiljko <strong>${highlightDelivery.quantity} en</strong> (${labelDeliveryStatus(highlightDelivery.status)}): ${escapeHtml(highlightDelivery.sourceName || labelRole(highlightDelivery.sourceRole))} → ${escapeHtml(highlightDelivery.targetName || labelRole(highlightDelivery.targetRole))}.`;
     } else if (onChain?.medicineId) {
         lead += ` Trenutni lastnik na verigi (${escapeHtml(chainNetwork)}): <strong>${escapeHtml(owner)}</strong>, status <strong>${escapeHtml(status)}</strong>.`;
     }
 
     return `<p class="detail-overview-lead">${lead}</p>
-        <p class="detail-overview-note text-muted">Spodnji zavihki razdelijo podatke: <em>Pregled</em> (kaj vidite), <em>Pot dobave</em> (kronologija na verigi), <em>Potrdila</em> (VC podpisi), <em>Razlaga</em> (AI pomoč).</p>`;
+        <p class="detail-overview-note text-muted">Podatki o poti prihajajo iz <strong>blockchaina</strong>, metapodatkov iz <strong>IPFS</strong> in potrdil iz <strong>Walt.id</strong>. PostgreSQL je le operativni indeks pošiljek.</p>`;
 }
 
 function renderVcBlock(claims, title, verified, opts = {}) {
@@ -346,8 +428,10 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
 
             <div class="detail-tab-panels">
                 <section class="detail-tab-panel detail-tab-panel--active" data-panel="overview" role="tabpanel">
+                    ${renderJourneyPathBanner(medicine)}
                     ${renderHumanOverview(medicine, highlightDelivery, chainNetwork)}
                     ${overviewFacts}
+                    ${(opts.viewerRole === 'pharmacy' || opts.viewerRole === 'regulator') ? renderPublicTraceLink(medicine.medicineId, medicine.batchNumber) : ''}
                     ${highlightDelivery ? `<div class="detail-focus-box">
                         <span class="detail-focus-label">Izbrana pošiljka</span>
                         <strong>${highlightDelivery.quantity} en</strong> · ${labelDeliveryStatus(highlightDelivery.status)}
@@ -370,7 +454,8 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
                 </section>
 
                 <section class="detail-tab-panel" data-panel="journey" role="tabpanel" hidden>
-                    ${renderJourneyStepper(timeline, chainNetwork, true)}
+                    <p class="detail-tab-intro text-muted">Kronologija iz pametne pogodbe <strong>${escapeHtml(chainNetwork)}</strong> — vsak korak: <em>kdo</em> je <em>komu</em> <em>kaj</em> dal.</p>
+                    ${renderJourneyStepsTable(medicine.journeySteps || [], false)}
                 </section>
 
                 <section class="detail-tab-panel" data-panel="credentials" role="tabpanel" hidden>
@@ -412,6 +497,15 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
     el.querySelector('.btn-vc-assistant-ai')?.addEventListener('click', () => {
         loadVcAssistant(medicine.medicineId, opts.sessionId, assistantOut, { ...assistantOpts, enhanceAi: true });
     });
+    el.querySelector('.btn-copy-trace-url')?.addEventListener('click', (e) => {
+        const input = el.querySelector('.trace-url-input');
+        if (input) {
+            input.select();
+            navigator.clipboard?.writeText(input.value);
+            e.target.textContent = 'Kopirano!';
+            setTimeout(() => { e.target.textContent = 'Kopiraj povezavo'; }, 2000);
+        }
+    });
 }
 
 async function loadMedicineDetails(medicineId, sessionId, containerId, opts = {}) {
@@ -423,6 +517,6 @@ async function loadMedicineDetails(medicineId, sessionId, containerId, opts = {}
         throw new Error(err.error || 'Napaka pri nalaganju podatkov');
     }
     const data = await response.json();
-    displayMedicineDetailPanel(containerId, data.medicine, { ...opts, sessionId });
+    displayMedicineDetailPanel(containerId, data.medicine, { ...opts, sessionId, viewerRole: data.viewerRole });
     return data.medicine;
 }
