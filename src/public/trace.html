@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="sl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Preveri poreklo zdravila</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="trace-page">
+    <header class="trace-header">
+        <h1>Preveri poreklo zdravila</h1>
+        <p class="text-muted">Javni pregled brez prijave — podatki iz blockchaina, IPFS in digitalnih potrdil.</p>
+    </header>
+
+    <main class="container trace-container">
+        <form id="trace-search-form" class="trace-search-card">
+            <div class="form-group">
+                <label for="trace-medicine-id">ID zdravila</label>
+                <input type="text" id="trace-medicine-id" class="form-control" placeholder="npr. MED-2024-001" required>
+            </div>
+            <div class="form-group">
+                <label for="trace-batch">Serija (opcijsko)</label>
+                <input type="text" id="trace-batch" class="form-control" placeholder="npr. LOT-A1">
+            </div>
+            <button type="submit" class="btn btn-primary">Preveri</button>
+        </form>
+
+        <div id="trace-result" class="trace-result" hidden></div>
+        <p id="trace-error" class="error-message" style="display:none;"></p>
+    </main>
+
+    <footer class="footer">
+        <p>Prototip diplomske naloge — ne nadomešča uradnega FMD sistema JAZMP.</p>
+    </footer>
+
+    <script src="shared-utils.js"></script>
+    <script src="trace.js"></script>
+</body>
+</html>
