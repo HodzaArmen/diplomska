@@ -84,7 +84,6 @@ function renderPublicTrace(trace) {
                 <span class="text-muted">${checks}</span>
             </div>
             <ol class="trace-steps">${stepsHtml || '<li class="text-muted">Pot še ni zabeležena na verigi.</li>'}</ol>
-            <p class="trace-disclaimer text-muted">${escapeHtml(trace.disclaimer || '')}</p>
         </article>`;
     resultEl.hidden = false;
 }

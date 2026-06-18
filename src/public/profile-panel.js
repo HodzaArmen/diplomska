@@ -7,8 +7,25 @@ let profileOverlayEl = null;
 const ROLE_META = {
     manufacturer: { label: 'Proizvajalec', emoji: '🏭', color: 'profile-role--mfg' },
     distributor: { label: 'Distributer', emoji: '📦', color: 'profile-role--dist' },
-    pharmacy: { label: 'Lekarna', emoji: '💊', color: 'profile-role--phr' }
+    pharmacy: { label: 'Lekarna', emoji: '💊', color: 'profile-role--phr' },
+    regulator: { label: 'JAZMP / Regulator', emoji: '🏛️', color: 'profile-role--reg' }
 };
+
+function chainCapabilityText(role) {
+    if (role === 'manufacturer') {
+        return 'Lahko registrirate zdravila in podpisujete pošiljke na verigi.';
+    }
+    if (role === 'distributor') {
+        return 'Lahko prevzemate pošiljke in pošiljate zdravila v lekarne.';
+    }
+    if (role === 'pharmacy') {
+        return 'Lahko prevzemate dostave v lekarni.';
+    }
+    if (role === 'regulator') {
+        return 'Regulativni pregled — brez pošiljanja ali prevzema zdravil.';
+    }
+    return 'Račun je registriran na pametni pogodbi.';
+}
 
 function roleMeta(role) {
     return ROLE_META[role] || { label: role || '—', emoji: '👤', color: 'profile-role--default' };
@@ -51,55 +68,27 @@ async function copyText(overlay, text, label) {
     }
 }
 
-function statusPill(ok, okText, failText) {
-    const cls = ok ? 'profile-pill profile-pill--ok' : 'profile-pill profile-pill--warn';
-    return `<span class="${cls}">${ok ? okText : failText}</span>`;
-}
-
-async function fetchProfile(sessionId) {
-    const res = await fetch(`/api/profile?sessionId=${encodeURIComponent(sessionId)}`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Napaka pri nalaganju profila');
-    return data;
-}
-
-function renderIntegrationStrip(p, onChain) {
-    const items = [
-        { ok: true, icon: '🦊', label: 'Wallet', detail: shortWallet(p.walletAddress) },
-        { ok: p.hasWaltSession && Boolean(p.did), icon: '🪪', label: 'Walt.id', detail: p.did ? 'DID aktivna' : 'Ni DID' },
-        { ok: onChain.registered, icon: '⛓', label: 'Veriga', detail: onChain.registered ? 'Registriran' : 'Ni registriran' }
-    ];
-    return `<div class="profile-integration-strip">
-        ${items.map((it) => `
-            <div class="profile-integration-item${it.ok ? ' profile-integration-item--ok' : ' profile-integration-item--pending'}">
-                <span class="profile-integration-icon" aria-hidden="true">${it.icon}</span>
-                <span class="profile-integration-label">${it.label}</span>
-                <span class="profile-integration-detail">${it.detail}</span>
-            </div>
-        `).join('')}
-    </div>`;
-}
-
 function renderProfilePanel(data) {
     const p = data.profile;
     const onChain = data.onChainUser || {};
+    const chain = data.blockchain || {};
     const meta = roleMeta(p.role);
-    const waltSince = fmtDate(p.waltIdRegisteredAt);
-    const connectedSince = fmtDate(p.walletConnectedAt);
+    const memberSince = fmtDate(p.waltIdRegisteredAt || p.walletConnectedAt);
+    const networkLabel = chain.network || 'Blockchain';
 
     const blockchainBlock = onChain.registered
         ? `<div class="profile-chain-card profile-chain-card--ok">
                 <span class="profile-chain-icon">✓</span>
                 <div>
-                    <strong>Račun je na verigi</strong>
-                    <p class="text-muted">Lahko podpisujete handoff dogodke in registrirate zdravila.</p>
+                    <strong>Registriran na verigi (${networkLabel})</strong>
+                    <p class="text-muted">${chainCapabilityText(p.role)}</p>
                 </div>
            </div>`
         : `<div class="profile-chain-card profile-chain-card--pending">
                 <span class="profile-chain-icon">!</span>
                 <div>
-                    <strong>Še niste na verigi</strong>
-                    <p class="text-muted">Enkratna registracija (<code>registerUser</code>) pred prvim pošiljanjem ali prevzemom.</p>
+                    <strong>Ni registriran na verigi</strong>
+                    <p class="text-muted">Enkratna registracija na pametni pogodbi pred prvim pošiljanjem ali prevzemom.</p>
                     <button type="button" class="btn btn-secondary btn-sm btn-sync-chain">Registriraj na verigi</button>
                 </div>
            </div>
@@ -118,13 +107,11 @@ function renderProfilePanel(data) {
                 <button type="button" class="btn btn-ghost btn-close-profile profile-close" aria-label="Zapri">✕</button>
             </header>
 
-            ${renderIntegrationStrip(p, onChain)}
-
             <section class="profile-card profile-card--edit">
                 <h4 class="profile-card-title">Urejanje podatkov</h4>
                 <div class="profile-form-grid">
                     <div class="profile-form-field">
-                        <label class="profile-label" for="profile-company">Ime podjetja / lekarne</label>
+                        <label class="profile-label" for="profile-company">Ime podjetja / ustanove</label>
                         <input type="text" class="form-control profile-input" id="profile-company" autocomplete="organization">
                     </div>
                     <div class="profile-form-field">
@@ -132,7 +119,7 @@ function renderProfilePanel(data) {
                         <input type="email" class="form-control profile-input" id="profile-email" autocomplete="email">
                     </div>
                 </div>
-                <p class="profile-hint">Wallet in vloga sta vezana na MetaMask — ju tukaj ne morete spremeniti.</p>
+                <p class="profile-hint">Wallet in vloga sta vezana na MetaMask in jih tukaj ne morete spremeniti.</p>
                 <div class="profile-form-actions">
                     <button type="button" class="btn btn-primary btn-save-profile">Shrani spremembe</button>
                 </div>
@@ -144,7 +131,7 @@ function renderProfilePanel(data) {
                 <h4 class="profile-card-title">Identiteta</h4>
                 <dl class="profile-dl">
                     <div class="profile-dl-row">
-                        <dt>Wallet</dt>
+                        <dt>MetaMask wallet</dt>
                         <dd>
                             <button type="button" class="profile-chip btn-copy-wallet" title="Kopiraj celoten naslov">
                                 <span class="profile-chip-label">${shortWallet(p.walletAddress)}</span>
@@ -153,22 +140,21 @@ function renderProfilePanel(data) {
                         </dd>
                     </div>
                     <div class="profile-dl-row">
-                        <dt>DID</dt>
+                        <dt>DID (Walt.id)</dt>
                         <dd>
                             ${p.did
                                 ? `<button type="button" class="profile-chip profile-chip--wide btn-copy-did" title="Kopiraj DID">
                                     <span class="profile-chip-label">${p.did.length > 42 ? p.did.slice(0, 20) + '…' + p.did.slice(-14) : p.did}</span>
                                     <span class="profile-chip-action">Kopiraj</span>
                                    </button>`
-                                : '<span class="text-muted">Ni na voljo — dokončajte Walt.id registracijo</span>'}
+                                : '<span class="text-muted">Ni na voljo</span>'}
                         </dd>
                     </div>
                     <div class="profile-dl-row">
-                        <dt>Walt.id</dt>
-                        <dd>${p.waltEmail || '—'} ${statusPill(p.hasWaltSession, '· seja aktivna', '· seja neaktivna')}</dd>
+                        <dt>Walt.id prijava</dt>
+                        <dd>${p.waltEmail || '—'}</dd>
                     </div>
-                    ${waltSince ? `<div class="profile-dl-row"><dt>Walt.id od</dt><dd>${waltSince}</dd></div>` : ''}
-                    ${connectedSince ? `<div class="profile-dl-row"><dt>Povezan od</dt><dd>${connectedSince}</dd></div>` : ''}
+                    ${memberSince ? `<div class="profile-dl-row"><dt>V sistemu od</dt><dd>${memberSince}</dd></div>` : ''}
                 </dl>
             </section>
 
@@ -177,13 +163,16 @@ function renderProfilePanel(data) {
                 ${blockchainBlock}
             </section>
 
-            <footer class="profile-footer">
-                <a href="/api/system/status" target="_blank" rel="noopener" class="profile-footer-link">Status storitev ↗</a>
-            </footer>
-
             <div class="profile-toast" hidden aria-live="polite"></div>
         </div>
     `;
+}
+
+async function fetchProfile(sessionId) {
+    const res = await fetch(`/api/profile?sessionId=${encodeURIComponent(sessionId)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Napaka pri nalaganju profila');
+    return data;
 }
 
 function bindProfileEvents(sessionId, data) {

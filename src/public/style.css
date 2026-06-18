@@ -23,6 +23,14 @@ body {
     background-color: var(--light-bg);
     color: var(--text-primary);
     line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+body > main {
+    flex: 1 0 auto;
+    width: 100%;
 }
 
 /* ===== NAVBAR ===== */
@@ -368,11 +376,13 @@ body {
 
 /* ===== FOOTER ===== */
 .footer {
+    flex-shrink: 0;
+    margin-top: auto;
     background: var(--text-primary);
     color: white;
     text-align: center;
-    padding: 2rem 1rem;
-    margin-top: 3rem;
+    padding: 1.25rem 1rem;
+    font-size: 0.875rem;
 }
 
 /* ===== DASHBOARD SECTION ===== */
@@ -513,6 +523,7 @@ body {
 
 /* ===== WALLET PREVIEW ===== */
 .wallet-preview {
+    display: none;
     background: linear-gradient(135deg, rgba(37, 99, 235, 0.05) 0%, rgba(37, 99, 235, 0.02) 100%);
     border: 1px solid var(--border-color);
     border-radius: var(--radius);
@@ -1055,13 +1066,6 @@ body.dashboard-page {
     background: var(--light-bg);
 }
 
-.footer {
-    text-align: center;
-    padding: 1.5rem;
-    color: var(--text-secondary);
-    font-size: 0.875rem;
-}
-
 .detail-sources {
     display: flex;
     flex-wrap: wrap;
@@ -1186,6 +1190,29 @@ body.dashboard-page {
     font-size: 0.95rem;
     line-height: 1.55;
     margin: 0 0 0.5rem;
+}
+
+.detail-tech-grid {
+    display: grid;
+    gap: 0.35rem 1rem;
+}
+
+.detail-tech-grid .detail-kv {
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--border-subtle, #eee);
+}
+
+.detail-tech-grid .detail-kv:last-child {
+    border-bottom: none;
+}
+
+.journey-partner-from {
+    color: var(--text-muted, #64748b);
+}
+
+.journey-partner-to::before {
+    content: '→ ';
+    color: var(--text-muted, #64748b);
 }
 
 .detail-overview-note {

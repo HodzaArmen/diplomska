@@ -206,9 +206,8 @@ export function buildJourneySteps({
     }
 
     for (const h of chainTimeline) {
-        const isReceive = h.action === 'RECEIVED_BY_DISTRIBUTOR' || h.action === 'RECEIVED_AT_PHARMACY';
-        const actorEntity = entityFromWallet(walletMap, isReceive ? h.counterparty : h.actor);
-        const counterEntity = entityFromWallet(walletMap, isReceive ? h.actor : h.counterparty);
+        const actorEntity = entityFromWallet(walletMap, h.actor);
+        const counterEntity = entityFromWallet(walletMap, h.counterparty);
         const transportVc = verifiedDeliveries.find((d) => d.deliveryId === h.deliveryId);
 
         let summary;
@@ -289,8 +288,7 @@ export function buildPublicTraceView(verified) {
         ipfsVerified: Boolean(verified.ipfsVerification?.accessible),
         vcVerified: Boolean(verified.vcSigned),
         trustLevel: verified.trustLevel,
-        steps,
-        disclaimer: 'Poenostavljen javni pregled porekla. Ne nadomešča uradnega FMD sistema JAZMP.'
+        steps
     };
 }
 
@@ -308,15 +306,14 @@ function computeTrustLevel(verified) {
 }
 
 function chainHandoffToTimelineEvent(h, walletMap, deliveryQtyMap = null) {
-    const isReceive = h.eventType === 'RECEIVED_BY_DISTRIBUTOR' || h.eventType === 'RECEIVED_AT_PHARMACY';
     let quantity = h.quantity || null;
     if (h.deliveryId && deliveryQtyMap?.has(h.deliveryId)) {
         quantity = deliveryQtyMap.get(h.deliveryId);
     }
-    const actor = isReceive ? h.counterparty : h.actor;
-    const counterparty = isReceive ? h.actor : h.counterparty;
-    const actorDID = isReceive ? h.counterpartyDID : h.actorDID;
-    const counterpartyDID = isReceive ? h.actorDID : h.counterpartyDID;
+    const actor = h.actor;
+    const counterparty = h.counterparty;
+    const actorDID = h.actorDID;
+    const counterpartyDID = h.counterpartyDID;
 
     return {
         action: h.eventType,

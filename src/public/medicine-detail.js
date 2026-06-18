@@ -9,13 +9,6 @@ const ROLE_LABELS = {
     regulator: 'JAZMP / regulator'
 };
 
-const TRUST_LAYER_HELP = {
-    vc: 'Podpisano digitalno potrdilo o izvoru zdravila (Walt.id issuer).',
-    ipfs: 'Nespremenljivi metapodatki na decentralizirani shrambi (CID).',
-    chain: 'Zapis na pametni pogodbi — kdo je kdaj imel zdravilo.',
-    hash: 'IPFS identifikator se ujema s tistim na blockchainu.'
-};
-
 function escapeHtml(text) {
     if (text == null) return '';
     const div = document.createElement('div');
@@ -77,15 +70,28 @@ function renderJourneyPathBanner(medicine) {
     </div>`;
 }
 
+const RECEIVE_ACTIONS = new Set(['RECEIVED_BY_DISTRIBUTOR', 'RECEIVED_AT_PHARMACY']);
+const SEND_ACTIONS = new Set(['SENT_TO_DISTRIBUTOR', 'FORWARDED_TO_PHARMACY']);
+
+function renderJourneyPartnerCell(step) {
+    if (!step.counterparty?.name || step.counterparty.name === '—') return '—';
+    const party = `${escapeHtml(step.counterparty.name)} ${roleBadge(step.counterparty.role)}`;
+    if (RECEIVE_ACTIONS.has(step.action)) {
+        return `<span class="journey-partner-from">od ${party}</span>`;
+    }
+    if (SEND_ACTIONS.has(step.action)) {
+        return `<span class="journey-partner-to">${party}</span>`;
+    }
+    return party;
+}
+
 function renderJourneyStepsTable(steps, compact = false) {
     if (!steps?.length) {
         return `<p class="text-muted">Na verigi še ni zabeleženih korakov poti.</p>`;
     }
     const rows = steps.map((s) => {
         const who = `${escapeHtml(s.actor?.name || '—')} ${roleBadge(s.actor?.role)}`;
-        const toWhom = s.counterparty
-            ? `${escapeHtml(s.counterparty.name || '—')} ${roleBadge(s.counterparty.role)}`
-            : '—';
+        const partner = renderJourneyPartnerCell(s);
         const proof = s.proof?.vcRef
             ? '<span class="proof-ok" title="VC referenca na verigi">VC ✓</span>'
             : (s.proof?.source === 'blockchain' ? '<span class="proof-ok">Veriga ✓</span>' : '—');
@@ -95,7 +101,7 @@ function renderJourneyStepsTable(steps, compact = false) {
             <td class="journey-step-num">${s.step}</td>
             <td><strong>${escapeHtml(s.actionLabel)}</strong><br><span class="text-muted journey-verb">${escapeHtml(s.verb || '')}</span></td>
             <td>${who}</td>
-            <td>${toWhom}</td>
+            <td>${partner}</td>
             <td>${s.quantity != null ? `${s.quantity} en` : '—'}</td>
             <td>${formatDisplayDateTime(s.timestamp)}</td>
             ${tech}
@@ -106,7 +112,7 @@ function renderJourneyStepsTable(steps, compact = false) {
     const proofCol = compact ? '' : '<th>Dokaz</th>';
     return `<table class="journey-table">
         <thead><tr>
-            <th>#</th><th>Dogodek</th><th>Kdo</th><th>Komu</th><th>Kol.</th><th>Kdaj</th>${proofCol}
+            <th>#</th><th>Dogodek</th><th>Kdo</th><th>Partner</th><th>Kol.</th><th>Kdaj</th>${proofCol}
         </tr></thead>
         <tbody>${rows}</tbody>
     </table>`;
@@ -150,37 +156,6 @@ function dedupeTimeline(timeline) {
     });
 }
 
-function buildTrustChecks(medicine) {
-    return [
-        { id: 'vc', ok: medicine.vcSigned, label: 'VC podpis', help: TRUST_LAYER_HELP.vc },
-        { id: 'ipfs', ok: Boolean(medicine.ipfsHash && medicine.ipfsVerification?.accessible), label: 'IPFS', help: TRUST_LAYER_HELP.ipfs },
-        { id: 'chain', ok: Boolean(medicine.onChain?.medicine?.medicineId), label: 'Veriga', help: TRUST_LAYER_HELP.chain },
-        { id: 'hash', ok: medicine.ipfsHashOnChain, label: 'Hash ✓', help: TRUST_LAYER_HELP.hash }
-    ];
-}
-
-function renderTrustStrip(medicine) {
-    const checks = buildTrustChecks(medicine);
-    const passed = checks.filter((c) => c.ok).length;
-    const level = passed === 4 ? 'high' : passed >= 2 ? 'mid' : 'low';
-    const levelLabel = passed === 4 ? 'Zanesljivo' : passed >= 2 ? 'Delno preverjeno' : 'Nezanesljivo';
-
-    return `<div class="detail-trust-strip detail-trust-strip--${level}">
-        <div class="detail-trust-strip-head">
-            <strong>${levelLabel}</strong>
-            <span class="text-muted">${passed}/4 plasti</span>
-        </div>
-        <div class="detail-trust-layers">
-            ${checks.map((c) => `
-                <div class="detail-trust-layer${c.ok ? ' detail-trust-layer--ok' : ''}" title="${escapeHtml(c.help)}">
-                    <span class="detail-trust-layer-icon">${c.ok ? '✓' : '✗'}</span>
-                    <span class="detail-trust-layer-label">${escapeHtml(c.label)}</span>
-                </div>
-            `).join('')}
-        </div>
-    </div>`;
-}
-
 function renderHumanOverview(medicine, highlightDelivery, chainNetwork) {
     const onChain = medicine.onChain?.medicine;
     const owner = medicine.onChain?.currentHolderLabel || onChain?.currentHolder || '—';
@@ -196,8 +171,7 @@ function renderHumanOverview(medicine, highlightDelivery, chainNetwork) {
         lead += ` Trenutni lastnik na verigi (${escapeHtml(chainNetwork)}): <strong>${escapeHtml(owner)}</strong>, status <strong>${escapeHtml(status)}</strong>.`;
     }
 
-    return `<p class="detail-overview-lead">${lead}</p>
-        <p class="detail-overview-note text-muted">Podatki o poti prihajajo iz <strong>blockchaina</strong>, metapodatkov iz <strong>IPFS</strong> in potrdil iz <strong>Walt.id</strong>. PostgreSQL je le operativni indeks pošiljek.</p>`;
+    return `<p class="detail-overview-lead">${lead}</p>`;
 }
 
 function renderVcBlock(claims, title, verified, opts = {}) {
@@ -218,7 +192,6 @@ function renderVcBlock(claims, title, verified, opts = {}) {
         <header class="vc-card-head">
             <div>
                 <h5>${escapeHtml(title)}</h5>
-                <p class="vc-card-desc text-muted">Kdo je podpisal premik / izvor in kdaj.</p>
             </div>
             ${status}
         </header>
@@ -355,6 +328,38 @@ function setupDetailTabs(panelEl) {
     });
 }
 
+function renderTechnicalBlock(medicine, chainNetwork) {
+    const onChain = medicine.onChain?.medicine;
+    const ipfsHash = medicine.ipfsHash || onChain?.ipfsHash;
+    const ipfsOk = medicine.ipfsVerification?.accessible;
+    const ex = medicine.blockchainExplorer;
+    const tx = medicine.txHash;
+    const shortTx = tx && tx.length > 16 ? `${tx.slice(0, 10)}…${tx.slice(-6)}` : tx;
+
+    return `<div class="detail-tech-grid">
+        ${detailRow('ID zdravila', `<code class="code-break">${escapeHtml(medicine.medicineId)}</code>`)}
+        ${detailRow('Omrežje', escapeHtml(chainNetwork))}
+        ${ipfsHash
+            ? detailRow('IPFS CID', `${renderIpfsLinksHtml(ipfsHash)}<p class="detail-tech-meta">${ipfsOk ? '✓ Dostopen' : '✗ Nedosegljiv'}${medicine.ipfsHashOnChain ? ' · ujema se z verigo' : ''}</p>`)
+            : detailRow('IPFS CID', '<span class="text-muted">Ni zapisa</span>')}
+        ${onChain?.currentHolder
+            ? detailRow('Lastnik (wallet)', `<code class="code-break">${escapeHtml(onChain.currentHolder)}</code>`)
+            : ''}
+        ${onChain?.currentHolderDID
+            ? detailRow('DID lastnika', `<code class="code-break" title="${escapeHtml(onChain.currentHolderDID)}">${escapeHtml(truncateDid(onChain.currentHolderDID))}</code>`)
+            : ''}
+        ${onChain?.status
+            ? detailRow('Status na verigi', `<span class="chain-status-pill">${escapeHtml(onChain.status)}</span>`)
+            : ''}
+        ${ex?.contract
+            ? detailRow('Pametna pogodba', `<a href="${ex.contract}" target="_blank" rel="noopener" class="link-external">Pogled na verigi ↗</a>`)
+            : ''}
+        ${ex?.tx && tx
+            ? detailRow('TX registracije', `<a href="${ex.tx}" target="_blank" rel="noopener" class="link-external">${escapeHtml(shortTx)} ↗</a>`)
+            : ''}
+    </div>`;
+}
+
 function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
     const el = document.getElementById(containerId);
     if (!el || !medicine) return;
@@ -382,7 +387,6 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
     const chainNetwork = medicine.dataSources?.chainNetwork || 'Blockchain';
     const onChain = medicine.onChain?.medicine;
     const chainStatus = onChain?.status || medicine.blockchainStatus || '—';
-    const ipfsOk = medicine.ipfsVerification?.accessible;
 
     const overviewFacts = `
         <div class="detail-facts-grid">
@@ -402,11 +406,6 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
                 <span class="text-muted">${labelRole(d.sourceRole)} → ${labelRole(d.targetRole)}</span>
             </div>`).join('');
 
-    const ipfsBlock = medicine.ipfsHash
-        ? `${renderIpfsLinksHtml(medicine.ipfsHash)}
-           <p class="detail-tech-meta">${ipfsOk ? '✓ Dostopen' : '✗ Nedosegljiv'}${medicine.ipfsHashOnChain ? ' · hash na verigi' : ''}</p>`
-        : '<p class="text-muted">Ni IPFS zapisa.</p>';
-
     el.innerHTML = `
         <div class="medicine-detail-panel dashboard-card">
             <header class="detail-header">
@@ -416,8 +415,6 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
                 </div>
                 <button type="button" class="btn btn-ghost btn-close-detail" aria-label="Zapri">✕</button>
             </header>
-
-            ${renderTrustStrip(medicine)}
 
             <nav class="detail-tabs" role="tablist" aria-label="Pregled zdravila">
                 <button type="button" class="detail-tab detail-tab--active" data-tab="overview" role="tab" aria-selected="true">Pregled</button>
@@ -438,28 +435,22 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
                         <span class="text-muted">${labelRole(highlightDelivery.sourceRole)} → ${labelRole(highlightDelivery.targetRole)}</span>
                     </div>` : ''}
                     <details class="detail-accordion detail-accordion--tech">
-                        <summary>Tehnični podatki (ID, IPFS, veriga)</summary>
+                        <summary>Tehnični podatki</summary>
                         <div class="detail-tech-block">
-                            ${detailRow('ID zdravila', `<code class="code-break">${escapeHtml(medicine.medicineId)}</code>`)}
-                            ${detailRow('IPFS', ipfsBlock)}
-                            ${onChain && onChain.currentHolderDID ? detailRow('DID lastnika', `<code class="code-break" title="${escapeHtml(onChain.currentHolderDID)}">${escapeHtml(truncateDid(onChain.currentHolderDID))}</code>`) : ''}
-                            ${renderBlockchainExplorerHtml(medicine)}
+                            ${renderTechnicalBlock(medicine, chainNetwork)}
                         </div>
                     </details>
                     <details class="detail-accordion">
-                        <summary>Pošiljke v aplikaciji (${deliveries.length})</summary>
-                        <p class="detail-accordion-hint text-muted">Operativni indeks (PostgreSQL) — za dokazilo porekla uporabite zavihek Pot dobave.</p>
+                        <summary>Pošiljke (${deliveries.length})</summary>
                         ${deliveriesHtml}
                     </details>
                 </section>
 
                 <section class="detail-tab-panel" data-panel="journey" role="tabpanel" hidden>
-                    <p class="detail-tab-intro text-muted">Kronologija iz pametne pogodbe <strong>${escapeHtml(chainNetwork)}</strong> — vsak korak: <em>kdo</em> je <em>komu</em> <em>kaj</em> dal.</p>
                     ${renderJourneyStepsTable(medicine.journeySteps || [], false)}
                 </section>
 
                 <section class="detail-tab-panel" data-panel="credentials" role="tabpanel" hidden>
-                    <p class="detail-tab-intro text-muted"><strong>Verifiable Credentials</strong> so podpisana digitalna potrdila. Proizvajalec izda potrdilo o zdravilu, ob vsakem premiku nastane transportno potrdilo.</p>
                     ${renderVcBlock(medicine.medicineVcClaims, 'Potrdilo o zdravilu (proizvajalec)', medicine.vcSigned)}
                     ${deliveries.filter((d) => d.transportVcClaims || d.transportVcSigned).map((d) =>
                         renderVcBlock(
@@ -471,7 +462,6 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
                 </section>
 
                 <section class="detail-tab-panel" data-panel="explain" role="tabpanel" hidden>
-                    <p class="detail-tab-intro text-muted">Pomoč pri razumevanju podatkov — najprej kratek povzetek, z <strong>AI razlago</strong> dobite naravni jezik (Groq).</p>
                     <div class="explain-actions">
                         <button type="button" class="btn btn-secondary btn-sm btn-vc-assistant">Kratek povzetek</button>
                         <button type="button" class="btn btn-primary btn-sm btn-vc-assistant-ai">🤖 AI razlaga</button>

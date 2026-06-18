@@ -293,7 +293,7 @@ async function createMedicine() {
 
         if (!medicine.ipfsHash) {
             const detail = medicine.ipfsError || warnings.join(' · ') || 'IPFS upload ni uspel';
-            showError('create-error', `Zdravilo je v bazi, vendar brez IPFS: ${detail}. Preveri GET /api/system/status in src/.env (Pinata), nato docker compose restart app.`);
+            showError('create-error', `Zdravilo je v bazi, vendar brez IPFS: ${detail}. Preveri Pinata ključe v src/.env in ponovno zaženi aplikacijo.`);
         }
 
         const coreOk = medicine.vcSigned && medicine.ipfsHash;
