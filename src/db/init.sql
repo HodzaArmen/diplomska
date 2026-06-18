@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS medicines (
     ipfs_hash VARCHAR(255),
     blockchain_tx_hash VARCHAR(255),
     blockchain_status VARCHAR(50), -- 'MANUFACTURED', 'IN_TRANSIT', 'DELIVERED'
-    vc_credential TEXT, -- JSON serialized VC
+    vc_credential TEXT, -- DEPRECATED: VC samo v Walt.id walletu (ne uporabljaj)
     is_active BOOLEAN DEFAULT TRUE,
     FOREIGN KEY (manufacturer_wallet) REFERENCES users(wallet_address) ON DELETE CASCADE
 );
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
     target_pharmacy_name VARCHAR(255), -- pharmacy name if target_role is 'pharmacy'
     quantity INTEGER NOT NULL,
     status VARCHAR(50) DEFAULT 'PENDING', -- 'PENDING', 'IN_TRANSIT', 'RECEIVED'
-    transport_vc_credential TEXT, -- JSON serialized VC for this shipment
+    transport_vc_credential TEXT, -- DEPRECATED: Transport VC samo v walletu pošiljatelja
     ipfs_hash VARCHAR(255), -- IPFS hash of this delivery's VC
     blockchain_tx_hash VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

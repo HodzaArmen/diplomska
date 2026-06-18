@@ -274,11 +274,13 @@ async function createMedicine() {
         let blockchainConfirmed = Boolean(data.blockchainAutoSigned || medicine.blockchainTxHash);
         if (!data.blockchainAutoSigned && !blockchainConfirmed && data.needsBlockchain && medicine.ipfsHash && window.BlockchainMetaMask) {
             try {
-                btn.textContent = '⏳ MetaMask (Sepolia)...';
+                btn.textContent = '⏳ MetaMask (veriga)...';
                 const chainResult = await BlockchainMetaMask.signMedicineAndConfirm(
                     currentSessionId,
                     medicine.medicineId,
-                    medicine.ipfsHash
+                    medicine.ipfsHash,
+                    currentUser.did,
+                    currentUser.role
                 );
                 medicine.blockchainTxHash = chainResult.txHash;
                 medicine.blockchainStatus = 'MANUFACTURED';

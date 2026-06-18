@@ -5,7 +5,7 @@
  */
 
 import crypto from 'crypto';
-import { verifyCredentialJwt, decodeVcClaims } from './waltid-ssi.js';
+import { verifyCredentialJwt, decodeVcClaims, resolveHolderCredentialJwt } from './waltid-ssi.js';
 import { fetchIpfsJson, verifyIpfsAccessible } from './ipfs.js';
 import {
     getMedicineFromBlockchain,
@@ -57,6 +57,53 @@ export function parseStoredVcRecord(vcRaw) {
     }
 }
 
+async function loadUserByWallet(pool, wallet) {
+    if (!wallet) return null;
+    const r = await pool.query(
+        'SELECT * FROM users WHERE LOWER(wallet_address) = LOWER($1)',
+        [wallet]
+    );
+    return r.rows[0] || null;
+}
+
+/** VC iz Walt.id walleta imetnika — brez PostgreSQL kopije. */
+async function resolveVcFromHolderWallet(pool, holderWallet, filters, expectedIssuerDid, credentialType) {
+    const user = await loadUserByWallet(pool, holderWallet);
+    if (!user) {
+        return {
+            verified: false,
+            structuralOnly: false,
+            jwt: null,
+            claims: null,
+            message: 'Imetnik VC ni najden',
+            source: 'wallet-api'
+        };
+    }
+    try {
+        const jwt = await resolveHolderCredentialJwt(user, { credentialType, ...filters });
+        if (!jwt) {
+            return {
+                verified: false,
+                structuralOnly: false,
+                jwt: null,
+                claims: null,
+                message: `VC ${credentialType} ni v walletu`,
+                source: 'wallet-api'
+            };
+        }
+        return verifyVcRecord(jwt, expectedIssuerDid || user.did, credentialType);
+    } catch (error) {
+        return {
+            verified: false,
+            structuralOnly: false,
+            jwt: null,
+            claims: null,
+            message: error.message,
+            source: 'wallet-api'
+        };
+    }
+}
+
 async function loadWalletLabelMap(pool, wallets = []) {
     const unique = [...new Set(wallets.filter(Boolean).map((w) => w.toLowerCase()))];
     const map = new Map();
@@ -96,6 +143,7 @@ async function verifyVcRecord(jwt, expectedIssuerDid, credentialType) {
     const result = await verifyCredentialJwt(jwt, expectedIssuerDid);
     return {
         ...result,
+        jwt,
         claims: decodeVcClaims(jwt),
         source: 'verifier-api',
         credentialType,
@@ -358,7 +406,7 @@ export async function buildVerifiedMedicineView({
         }
     }
 
-    const ipfsHash = onChainMedicine?.ipfsHash || dbMedicine?.ipfs_hash || null;
+    const ipfsHash = onChainMedicine?.ipfsHash || null;
     const ipfsHashOnChain = Boolean(onChainMedicine?.ipfsHash);
     const ipfsHashMatchesDb = !onChainMedicine?.ipfsHash
         || !dbMedicine?.ipfs_hash
@@ -376,9 +424,10 @@ export async function buildVerifiedMedicineView({
         }
     }
 
-    const medicineVcRaw = parseStoredVcRecord(dbMedicine?.vc_credential);
-    const medicineVc = await verifyVcRecord(
-        medicineVcRaw.jwt,
+    const medicineVc = await resolveVcFromHolderWallet(
+        pool,
+        dbMedicine?.manufacturer_wallet,
+        { medicineId },
         dbMedicine?.manufacturer_did,
         'MedicineCredential'
     );
@@ -401,20 +450,17 @@ export async function buildVerifiedMedicineView({
 
     const verifiedDeliveries = [];
     for (const d of dbDeliveries) {
-        const vc = parseStoredVcRecord(d.transport_vc_credential);
-        const expectedDid = d.source_role === 'manufacturer'
-            ? dbMedicine?.manufacturer_did
-            : (await pool.query(
-                'SELECT did FROM users WHERE wallet_address = $1',
-                [d.source_wallet]
-            )).rows[0]?.did;
-
-        const verifiedTransport = vc.jwt
-            ? await verifyVcRecord(vc.jwt, expectedDid, 'MedicineTransportCredential')
-            : { verified: false, claims: null, message: 'Transport VC ni izdan', source: 'verifier-api' };
+        const senderUser = await loadUserByWallet(pool, d.source_wallet);
+        const transportVc = await resolveVcFromHolderWallet(
+            pool,
+            d.source_wallet,
+            { medicineId, deliveryId: d.delivery_id },
+            senderUser?.did,
+            'MedicineTransportCredential'
+        );
 
         verifiedDeliveries.push(
-            mergeDeliveryFromChainAndVc(d, chainHandoffs, verifiedTransport)
+            mergeDeliveryFromChainAndVc(d, chainHandoffs, transportVc)
         );
     }
 
@@ -494,7 +540,7 @@ export async function buildVerifiedMedicineView({
         vcStructuralOnly: medicineVc.structuralOnly,
         vcVerificationMessage: medicineVc.message,
         medicineVcClaims: medicineVc.claims,
-        medicineVcSource: 'verifier-api',
+        medicineVcSource: 'wallet-api',
         onChainRegistered: Boolean(onChainMedicine?.medicineId),
         onChain: {
             available: Boolean(onChainMedicine),
@@ -510,11 +556,12 @@ export async function buildVerifiedMedicineView({
         deliveries: verifiedDeliveries,
         dataSources: {
             timeline: chainTimeline.length > 0 ? 'blockchain' : 'none',
-            medicineVc: medicineVc.jwt ? 'verifier-api' : 'none',
-            transportVc: 'verifier-api',
+            medicineVc: medicineVc.jwt ? 'wallet-api' : 'none',
+            transportVc: 'wallet-api',
             productData: ipfsHashOnChain ? 'ipfs-via-blockchain' : (ipfsHash ? 'ipfs-index' : 'none'),
             deliveriesIndex: 'postgres-inbox-only',
-            operationalNote: 'PostgreSQL hrani le operativni indeks pošiljek (inbox). Prikaz poti temelji na verigi, IPFS in VC.',
+            vcSource: 'wallet-api-only',
+            operationalNote: 'VC se bere iz Walt.id walleta imetnika. PostgreSQL ne hrani JWT kopij.',
             note: chainTimeline.length === 0
                 ? 'Na verigi še ni handoff dogodkov. Po redeploy pogodbe in novih pošiljkah bo pot dobave prišla iz blockchaina.'
                 : 'Pot dobave in statusi iz blockchaina; VC preverjeni prek Walt.id Verifier API (tutorial OID4VP).',

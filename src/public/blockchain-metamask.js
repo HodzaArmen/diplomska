@@ -100,9 +100,20 @@ async function isUserRegisteredOnChain(walletAddress) {
     const config = await loadBlockchainConfig();
     const ethersLib = window.ethers;
     const provider = new ethersLib.BrowserProvider(window.ethereum);
+    const code = await provider.getCode(config.contractAddress);
+    if (!code || code === '0x') {
+        throw new Error('Pametna pogodba ni deployana na tej verigi. Počakajte na scripts-deploy-anvil ali zaženite deploy-anvil.ps1.');
+    }
     const contract = new ethersLib.Contract(config.contractAddress, config.abi, provider);
-    const user = await contract.getUser(walletAddress);
-    return Boolean(user.registered);
+    try {
+        const user = await contract.getUser(walletAddress);
+        return Boolean(user.registered);
+    } catch (error) {
+        if (error?.code === 'BAD_DATA' || String(error?.message || '').includes('could not decode')) {
+            return false;
+        }
+        throw error;
+    }
 }
 
 async function registerUserOnChain(did, role) {
@@ -130,7 +141,13 @@ async function registerMedicineOnChain(medicineId, ipfsHash) {
     if (!medicineId || !ipfsHash) {
         throw new Error('Manjka medicineId ali ipfsHash');
     }
-    await getConnectedAccount();
+    const account = await getConnectedAccount();
+    const registered = await isUserRegisteredOnChain(account);
+    if (!registered) {
+        throw new Error(
+            'Wallet ni registriran na verigi. Odprite Profil → On-chain registracija (registerUser), nato poskusite znova.'
+        );
+    }
     const contract = await getContract();
     const tx = await contract.registerMedicine(medicineId, ipfsHash);
     const receipt = await tx.wait();
@@ -202,7 +219,18 @@ async function ensureOnChainUser(sessionId, did, role) {
     }
 }
 
-async function signMedicineAndConfirm(sessionId, medicineId, ipfsHash) {
+async function signMedicineAndConfirm(sessionId, medicineId, ipfsHash, did, role) {
+    const reg = await ensureOnChainUser(sessionId, did, role);
+    if (reg?.error) {
+        throw new Error(`On-chain registracija uporabnika ni uspela: ${reg.error}`);
+    }
+    const account = await getConnectedAccount();
+    const registered = await isUserRegisteredOnChain(account);
+    if (!registered) {
+        throw new Error(
+            'Wallet še ni na verigi. Potrdite registerUser v MetaMask (Profil → On-chain registracija).'
+        );
+    }
     const result = await registerMedicineOnChain(medicineId, ipfsHash);
     const confirmed = await confirmBlockchainTx(sessionId, {
         type: 'register_medicine',

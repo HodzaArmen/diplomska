@@ -164,13 +164,20 @@ async function getUserFromBlockchain(walletAddress) {
     if (!readContract) {
         throw new Error('Blockchain not initialized');
     }
-    const user = await readContract.getUser(walletAddress);
-    return {
-        wallet: user.wallet,
-        did: user.did,
-        role: user.role,
-        registered: Boolean(user.registered)
-    };
+    try {
+        const user = await readContract.getUser(walletAddress);
+        return {
+            wallet: user.wallet,
+            did: user.did,
+            role: user.role,
+            registered: Boolean(user.registered)
+        };
+    } catch (error) {
+        if (isEmptyChainReadError(error)) {
+            return { wallet: walletAddress, did: '', role: '', registered: false };
+        }
+        throw error;
+    }
 }
 
 function isEmptyChainReadError(error) {

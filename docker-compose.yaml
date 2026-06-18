@@ -217,6 +217,43 @@ services:
     ports:
       - "8545:8545"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "cast chain-id --rpc-url http://127.0.0.1:8545 | grep -q 31337"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  scripts-deploy-anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: scripts-deploy-anvil
+    depends_on:
+      anvil:
+        condition: service_healthy
+    restart: "no"
+    volumes:
+      - ./src:/src
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        RPC=http://anvil:8545
+        PK=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+        echo "Cakam Anvil..."
+        i=0
+        while [ $$i -lt 45 ]; do
+          cast chain-id --rpc-url $$RPC 2>/dev/null | grep -q 31337 && break
+          i=$$((i+1))
+          [ $$i -eq 45 ] && echo "Anvil timeout" && exit 1
+          sleep 2
+        done
+        cd /src
+        echo "Deploy SupplyChain.sol..."
+        OUT=$$(forge create SupplyChain.sol:SupplyChain --rpc-url $$RPC --private-key $$PK --broadcast 2>&1) || { echo "$$OUT"; exit 1; }
+        echo "$$OUT" | tail -n 6
+        ADDR=$$(echo "$$OUT" | sed -n 's/.*Deployed to: \(0x[a-fA-F0-9]*\).*/\1/p' | head -n 1)
+        [ -z "$$ADDR" ] && echo "Ni naslova pogodbe" && exit 1
+        echo "CONTRACT_ADDRESS=$$ADDR" > /src/.contract-address
+        echo "USPEH: $$ADDR"
 
   app:
     build:
@@ -227,7 +264,9 @@ services:
       app-postgres:
         condition: service_healthy
       anvil:
-        condition: service_started
+        condition: service_healthy
+      scripts-deploy-anvil:
+        condition: service_completed_successfully
       issuer-api:
         condition: service_started
       verifier-api:

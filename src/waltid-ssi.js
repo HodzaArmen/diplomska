@@ -736,6 +736,98 @@ function waltWalletAuthHeaders({ waltCookie, waltBearerToken } = {}) {
     return {};
 }
 
+/** Wallet auth podatki iz users vrstice (custodial wallet). */
+export function holderWalletAuthFromUser(user) {
+    if (!user?.wallet_id) return null;
+    const waltCookie = user.walt_api_cookie || user.waltCookie || null;
+    const waltBearerToken = user.walt_bearer_token || user.waltBearerToken || null;
+    if (!waltCookie && !waltBearerToken) return null;
+    return { walletId: user.wallet_id, waltCookie, waltBearerToken };
+}
+
+/**
+ * Seznam VC v Walt.id walletu — vir resnice za credentials (ne PostgreSQL).
+ */
+export async function listWalletCredentials(walletId, auth = {}) {
+    if (!walletId) throw new Error('Manjka wallet_id');
+    const response = await axios.get(
+        `${WALLET_API}/wallet/${walletId}/credentials`,
+        {
+            headers: {
+                ...waltWalletAuthHeaders(auth),
+                Accept: 'application/json'
+            },
+            timeout: 30000,
+            validateStatus: () => true
+        }
+    );
+    if (response.status >= 400) {
+        throw new Error(`wallet credentials list ${response.status}: ${JSON.stringify(response.data)?.slice(0, 200)}`);
+    }
+    return Array.isArray(response.data) ? response.data : [];
+}
+
+function credentialJwtFromWalletEntry(entry) {
+    const doc = entry?.document || entry?.credential || entry?.parsedDocument;
+    return (typeof doc === 'string' && doc.includes('.')) ? doc : null;
+}
+
+/** Filtriraj wallet credential po claims (medicineId, deliveryId, eventType). */
+export function matchesCredentialFilters(entry, {
+    credentialType = null,
+    medicineId = null,
+    deliveryId = null,
+    eventType = null
+} = {}) {
+    const jwt = credentialJwtFromWalletEntry(entry);
+    if (!jwt) return false;
+    if (credentialType && getCredentialTypeFromJwt(jwt) !== credentialType) return false;
+    const claims = decodeVcClaims(jwt);
+    const sub = claims?.credentialSubject || claims;
+    if (medicineId && sub?.medicineId !== medicineId) return false;
+    if (deliveryId && sub?.deliveryId !== deliveryId) return false;
+    if (eventType && sub?.eventType !== eventType) return false;
+    return true;
+}
+
+/**
+ * Poišči JWT v walletu imetnika (brez PostgreSQL kopije).
+ */
+export async function resolveHolderCredentialJwt(holderUser, filters = {}) {
+    const auth = holderWalletAuthFromUser(holderUser);
+    if (!auth) return null;
+    const list = await listWalletCredentials(auth.walletId, auth);
+    const hit = list.find((entry) => matchesCredentialFilters(entry, filters));
+    return hit ? credentialJwtFromWalletEntry(hit) : null;
+}
+
+/**
+ * OID4VP presentation iz walleta imetnika + filtri po medicineId/deliveryId.
+ */
+export async function verifyCredentialPresentationFromHolder({
+    holderUser,
+    credentialType,
+    expectedIssuerDid = null,
+    filters = {}
+}) {
+    const auth = holderWalletAuthFromUser(holderUser);
+    if (!auth) {
+        return {
+            verified: false,
+            structuralOnly: false,
+            message: 'Manjka Walt.id seja imetnika VC — ponovna prijava pošiljatelja',
+            source: 'wallet-api'
+        };
+    }
+
+    return verifyCredentialViaWallet({
+        ...auth,
+        credentialType,
+        expectedIssuerDid,
+        claimFilters: filters
+    });
+}
+
 async function initOid4vpVerificationSession(credentialType, options = {}) {
     const { statusCallbackUri, authorizeBaseUrl, walletId } = options;
     const body = {
@@ -773,7 +865,13 @@ async function initOid4vpVerificationSession(credentialType, options = {}) {
         throw new Error(`Verifier init ${response.status}: ${JSON.stringify(response.data)?.slice(0, 200)}`);
     }
 
-    if (typeof response.data !== 'string' || !response.data.startsWith('openid4vp://')) {
+    if (typeof response.data !== 'string') {
+        throw new Error(`Verifier init ni vrnil authorization URL (prejel: ${JSON.stringify(response.data)?.slice(0, 120)})`);
+    }
+
+    const isOid4vp = response.data.startsWith('openid4vp://');
+    const isHttpPresentation = response.data.startsWith('http://') || response.data.startsWith('https://');
+    if (!isOid4vp && !isHttpPresentation) {
         throw new Error(`Verifier init ni vrnil OID4VP URL (prejel: ${JSON.stringify(response.data)?.slice(0, 120)})`);
     }
 
@@ -802,7 +900,8 @@ export async function verifyCredentialViaWallet({
     waltCookie = null,
     waltBearerToken = null,
     credentialType,
-    expectedIssuerDid = null
+    expectedIssuerDid = null,
+    claimFilters = null
 }) {
     if (!walletId) {
         return { verified: false, message: 'Manjka wallet_id za wallet verify tok' };
@@ -855,15 +954,21 @@ export async function verifyCredentialViaWallet({
         }
 
         const matches = Array.isArray(matchResponse.data) ? matchResponse.data : [];
-        if (matches.length === 0) {
+        const filtered = claimFilters
+            ? matches.filter((m) => matchesCredentialFilters(m, { credentialType, ...claimFilters }))
+            : matches;
+
+        if (filtered.length === 0) {
             return {
                 verified: false,
-                message: `Wallet nima ustreznega ${credentialType} credentiala`,
+                message: claimFilters
+                    ? `Wallet nima ${credentialType} za ${JSON.stringify(claimFilters)}`
+                    : `Wallet nima ustreznega ${credentialType} credentiala`,
                 source: 'wallet-api'
             };
         }
 
-        const selectedCredentials = matches.map((m) => m.id).filter(Boolean);
+        const selectedCredentials = filtered.map((m) => m.id).filter(Boolean);
         await axios.post(
             `${WALLET_API}/wallet/${walletId}/exchange/usePresentationRequest`,
             {
@@ -885,7 +990,7 @@ export async function verifyCredentialViaWallet({
         const signatureOk = policiesPassed(result.policyResults);
         const verified = result.verificationResult === true && signatureOk;
 
-        const jwt = matches[0]?.document;
+        const jwt = credentialJwtFromWalletEntry(filtered[0]);
         const parties = jwt ? extractVcParties(jwt) : { issuer: null, subject: null };
         const issuerOk = matchesExpectedIssuer(parties, expectedIssuerDid);
 
@@ -894,6 +999,7 @@ export async function verifyCredentialViaWallet({
             structuralOnly: false,
             issuer: parties.issuer,
             subject: parties.subject,
+            jwt,
             message: verified && issuerOk
                 ? 'VC predstavljen iz wallet-a in preverjen (tutorial OID4VP)'
                 : verified
@@ -1011,38 +1117,52 @@ export async function verifyCredentialJwt(jwt, expectedIssuerDid = null, options
 }
 
 /**
- * Preveri VC ob prevzemu: najprej wallet (tutorial), nato OID4VP z JWT referenco.
+ * Preveri VC ob prevzemu — čist SSI: presentation iz walleta imetnika (pošiljatelja).
+ * JWT iz PostgreSQL se ne uporablja.
  */
 export async function verifyCredentialForReceive({
-    jwt,
+    holderUser,
     expectedIssuerDid,
     credentialType,
-    walletOpts = null
+    filters = {},
+    jwt = null
 }) {
-    const strictOpts = { strict: true };
+    if (holderUser) {
+        const resolvedJwt = jwt || await resolveHolderCredentialJwt(holderUser, { credentialType, ...filters });
+        if (resolvedJwt) {
+            const jwtResult = await verifyCredentialJwt(resolvedJwt, expectedIssuerDid, { strict: true });
+            if (jwtResult.verified) {
+                return { ...jwtResult, jwt: resolvedJwt, source: 'wallet-api+verifier-api' };
+            }
+            if (!jwtResult.structuralOnly) {
+                return { ...jwtResult, jwt: resolvedJwt, source: 'wallet-api+verifier-api' };
+            }
+        }
 
-    if (walletOpts?.walletId && (walletOpts.waltCookie || walletOpts.waltBearerToken)) {
-        const walletResult = await verifyCredentialViaWallet({
-            walletId: walletOpts.walletId,
-            waltCookie: walletOpts.waltCookie,
-            waltBearerToken: walletOpts.waltBearerToken,
+        const walletResult = await verifyCredentialPresentationFromHolder({
+            holderUser,
             credentialType,
-            expectedIssuerDid
+            expectedIssuerDid,
+            filters
         });
         if (walletResult.verified) {
-            return walletResult;
+            return {
+                ...walletResult,
+                jwt: walletResult.jwt || resolvedJwt || await resolveHolderCredentialJwt(holderUser, { credentialType, ...filters })
+            };
         }
+        return walletResult;
     }
 
     if (jwt) {
-        return verifyCredentialJwt(jwt, expectedIssuerDid, strictOpts);
+        return verifyCredentialJwt(jwt, expectedIssuerDid, { strict: true });
     }
 
     return {
         verified: false,
         structuralOnly: false,
-        message: 'VC ni na voljo',
-        source: 'verifier-api'
+        message: 'VC ni v walletu imetnika in ni JWT reference',
+        source: 'wallet-api'
     };
 }
 
