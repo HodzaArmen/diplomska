@@ -49,6 +49,9 @@ async function initializeDashboard() {
 
         displayUserProfile();
         ProfilePanel?.setupProfileButton?.(currentSessionId);
+        if (!isUserJazmpApproved(currentUser)) {
+            setupJazmpApprovalGate(currentUser, { disableSelectors: [] });
+        }
         attachEventListeners();
         updateWalletStatus();
         await loadIncomingDeliveries();
@@ -122,10 +125,10 @@ async function loadIncomingDeliveries() {
                             <td>${formatDisplayDate(d.expiry_date)}</td>
                             <td>${renderStatusBadge(d.status)}</td>
                             <td class="action-cell">
-                                <button type="button" class="btn-small btn-preview"
+                                <button type="button" class="btn btn-sm btn-preview"
                                     data-medicine-id="${escapeHtml(d.medicine_id)}"
                                     data-delivery-id="${escapeHtml(d.delivery_id)}">Pregled</button>
-                                <button type="button" class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">Sprejmi</button>
+                                <button type="button" class="btn btn-sm btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">Sprejmi</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -267,7 +270,7 @@ async function loadMyInventory() {
                             <td>${formatDisplayDate(m.expiry_date)}</td>
                             <td>${renderStatusBadge(m.blockchain_status, 'medicine')}</td>
                             <td>
-                                <button type="button" class="btn-small btn-preview"
+                                <button type="button" class="btn btn-sm btn-preview"
                                     data-medicine-id="${escapeHtml(m.medicine_id)}"
                                     data-delivery-id="${escapeHtml(m.delivery_id || '')}">Pregled</button>
                             </td>

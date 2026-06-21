@@ -51,6 +51,7 @@ async function initializeDashboard() {
 
         displayUserProfile();
         ProfilePanel?.setupProfileButton?.(currentSessionId);
+        setupJazmpApprovalGate(currentUser);
         await loadMedicineTemplates();
         await loadDistributors();
         attachEventListeners();
@@ -213,6 +214,11 @@ async function createMedicine() {
     try {
         clearMessages('create');
 
+        if (!isUserJazmpApproved(currentUser)) {
+            showError('create-error', 'Račun še ni potrjen s strani JAZMP.');
+            return;
+        }
+
         const medicineSelection = document.getElementById('medicine-selection').value;
         const customMedicineName = document.getElementById('custom-medicine-name').value;
         const batchNumber = document.getElementById('batch-number').value;
@@ -347,6 +353,11 @@ async function createMedicine() {
 async function sendToDistributor() {
     try {
         clearMessages('delivery');
+
+        if (!isUserJazmpApproved(currentUser)) {
+            showError('delivery-error', 'Račun še ni potrjen s strani JAZMP.');
+            return;
+        }
 
         const medicineSelect = document.getElementById('delivery-medicine');
         const medicineId = medicineSelect?.value?.trim();

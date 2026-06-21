@@ -50,6 +50,9 @@ async function initializeDashboard() {
 
         displayUserProfile();
         ProfilePanel?.setupProfileButton?.(currentSessionId);
+        setupJazmpApprovalGate(currentUser, {
+            disableSelectors: ['#btn-send-forward', '#forward-send-section input', '#forward-send-section select']
+        });
         attachEventListeners();
         updateWalletStatus();
         await loadPharmacies();
@@ -186,8 +189,8 @@ async function loadIncomingDeliveries() {
                             <td>${d.quantity}</td>
                             <td>${formatDisplayDate(d.expiry_date)}</td>
                             <td class="action-cell">
-                                <button type="button" class="btn-small btn-preview" data-medicine-id="${escapeHtml(d.medicine_id)}" data-delivery-id="${escapeHtml(d.delivery_id)}">Pregled</button>
-                                <button type="button" class="btn-small btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">Sprejmi</button>
+                                <button type="button" class="btn btn-sm btn-preview" data-medicine-id="${escapeHtml(d.medicine_id)}" data-delivery-id="${escapeHtml(d.delivery_id)}">Pregled</button>
+                                <button type="button" class="btn btn-sm btn-receive" data-delivery-id="${escapeHtml(d.delivery_id)}">Sprejmi</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -292,8 +295,8 @@ async function loadMyInventory() {
                             <td>${m.available_quantity} enot</td>
                             <td>${formatDisplayDate(m.expiry_date)}</td>
                             <td>
-                                <button type="button" class="btn-small btn-details" data-medicine-id="${escapeHtml(m.medicine_id)}">Pregled</button>
-                                <button type="button" class="btn-small btn-forward" data-medicine-id="${escapeHtml(m.medicine_id)}">🚚 Pošlji</button>
+                                <button type="button" class="btn btn-sm btn-details" data-medicine-id="${escapeHtml(m.medicine_id)}">Pregled</button>
+                                <button type="button" class="btn btn-sm btn-forward" data-medicine-id="${escapeHtml(m.medicine_id)}">Pošlji</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -331,6 +334,12 @@ async function forwardMedicineToPharmacy() {
     successEl.style.display = 'none';
 
     try {
+        if (!isUserJazmpApproved(currentUser)) {
+            errorEl.textContent = 'Račun še ni potrjen s strani JAZMP.';
+            errorEl.style.display = 'block';
+            return;
+        }
+
         const medicineSelect = document.getElementById('forward-medicine');
         const medicineId = medicineSelect?.value?.trim();
         const quantity = parseInt(document.getElementById('forward-quantity').value, 10);
@@ -418,8 +427,8 @@ async function loadOutgoingDeliveries() {
                             <td>${d.quantity}</td>
                             <td>${renderStatusBadge(d.status)}</td>
                             <td>${formatDisplayDate(d.created_at)}</td>
-                            <td><button type="button" class="btn-small btn-details" data-medicine-id="${escapeHtml(d.medicine_id)}">Pregled</button></td>
-                        </tr>
+                            <td><button type="button" class="btn btn-sm btn-details" data-medicine-id="${escapeHtml(d.medicine_id)}">Pregled</button></td>
+                            </tr>
                     `).join('')}
                 </tbody>
             </table>

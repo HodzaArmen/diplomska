@@ -1,15 +1,15 @@
 /**
  * app.js - Frontend logic for user authentication and MetaMask integration
- * Handles user registration, login, session management, and wallet connection
- * Communicates with backend API for authentication and user info
- * Manages UI state for authentication flow and error handling
  */
 
 let currentUser = null;
 let currentSessionId = null;
 let currentWalletAddress = null;
 let walletCheck = null;
-let authMode = 'login';
+let authMode = 'register';
+
+const MM_REJECTED_MSG = window.BlockchainMetaMask?.META_MASK_REJECTED_MSG
+    || 'Napaka pri odobritvi transakcije v MetaMask.';
 
 document.addEventListener('DOMContentLoaded', initializeApp);
 
@@ -28,19 +28,18 @@ async function initializeApp() {
     if (sessionId) {
         try {
             const v = await fetch(`/api/auth/validate-session?sessionId=${encodeURIComponent(sessionId)}`);
-            if (v.ok && (await v.json()).valid) {
-                const userInfo = await getUserInfo(sessionId);
-                if (userInfo.user) {
-                    currentUser = userInfo.user;
-                    currentSessionId = sessionId;
-                    sessionStorage.setItem('user', JSON.stringify(currentUser));
-                    redirectToRoleDashboard();
-                    return;
-                }
+            const data = v.ok ? await v.json() : { valid: false };
+            if (data.valid && data.readyForDashboard && data.user) {
+                currentUser = data.user;
+                currentSessionId = sessionId;
+                sessionStorage.setItem('user', JSON.stringify(currentUser));
+                redirectToRoleDashboard();
+                return;
             }
         } catch (_) { /* */ }
         sessionStorage.clear();
     }
+
     showRegistration();
     attachEventListeners();
 }
@@ -67,21 +66,45 @@ function showPhase(n) {
     document.getElementById('step-2').classList.toggle('active', n >= 2);
 }
 
-function showAuthForm() {
+function isPendingOnChainRegistration() {
+    return Boolean(walletCheck?.registered && walletCheck?.hasWaltId && walletCheck?.needsOnChainConfirmation);
+}
+
+function showAuthForm(options = {}) {
+    const { forceRegister = false, forceLogin = false } = options;
     showPhase(2);
     document.getElementById('auth-mode-tabs').style.display = 'flex';
-    const useLogin = authMode === 'login' || (walletCheck?.registered && walletCheck?.hasWaltId);
-    if (walletCheck?.registered && walletCheck?.hasWaltId) {
+
+    let useLogin;
+    if (forceRegister) {
+        useLogin = false;
+        authMode = 'register';
+    } else if (forceLogin) {
+        useLogin = true;
         authMode = 'login';
-        document.getElementById('tab-login')?.classList.add('active');
-        document.getElementById('tab-register')?.classList.remove('active');
+    } else if (isPendingOnChainRegistration()) {
+        useLogin = false;
+        authMode = 'register';
+    } else {
+        useLogin = authMode === 'login' || (walletCheck?.registered && walletCheck?.hasWaltId);
     }
+
+    document.getElementById('tab-login')?.classList.toggle('active', useLogin);
+    document.getElementById('tab-register')?.classList.toggle('active', !useLogin);
     document.getElementById('phase-2-login').style.display = useLogin ? 'block' : 'none';
     document.getElementById('phase-2-register').style.display = useLogin ? 'none' : 'block';
+
     const email = walletCheck?.user?.waltEmail || walletCheck?.user?.email || '';
     if (email) {
         document.getElementById('walt-login-email').value = email;
         document.getElementById('user-email').value = email;
+    }
+
+    const registerBtn = document.getElementById('btn-register-complete');
+    if (registerBtn && isPendingOnChainRegistration()) {
+        registerBtn.textContent = '✓ Potrdi v MetaMask';
+    } else if (registerBtn) {
+        registerBtn.textContent = '✓ Registracija';
     }
 }
 
@@ -98,9 +121,112 @@ function redirectToRoleDashboard() {
     if (currentUser?.role) window.location.href = getDashboardUrl(currentUser.role);
 }
 
+function persistAuthSession() {
+    sessionStorage.setItem('sessionId', currentSessionId);
+    sessionStorage.setItem('user', JSON.stringify(currentUser));
+}
+
+function clearClientAuthSession() {
+    sessionStorage.removeItem('sessionId');
+    sessionStorage.removeItem('user');
+    currentSessionId = null;
+    currentUser = null;
+}
+
+function isMetaMaskRejectedError(error) {
+    if (window.BlockchainMetaMask?.isMetaMaskUserRejection?.(error)) return true;
+    const msg = String(error?.message || error || '');
+    return msg === MM_REJECTED_MSG || /odobritvi transakcije v MetaMask/i.test(msg);
+}
+
+async function invalidateServerSession(sessionId) {
+    if (!sessionId) return;
+    try {
+        await fetch('/api/auth/logout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId })
+        });
+    } catch (_) { /* */ }
+}
+
+async function refreshWalletCheck() {
+    if (!currentWalletAddress) return;
+    const checkResponse = await fetch(
+        `/api/auth/check-wallet?walletAddress=${encodeURIComponent(currentWalletAddress)}`
+    );
+    if (!checkResponse.ok) {
+        throw new Error('Napaka pri preverjanju denarnice');
+    }
+    walletCheck = await checkResponse.json();
+}
+
+async function finalizeAuthenticatedSession(authData, { errorElementId = 'login-error' } = {}) {
+    const pendingSessionId = authData.sessionId;
+    currentSessionId = pendingSessionId;
+    currentUser = authData.user;
+
+    try {
+        if (authData.needsOnChainRegistration) {
+            if (!window.BlockchainMetaMask) {
+                throw new Error('Blockchain modul ni naložen. Osvežite stran (Ctrl+F5).');
+            }
+            updateLoadingStatus('MetaMask — potrdite registerUser...');
+            await BlockchainMetaMask.ensureOnChainUser(
+                pendingSessionId,
+                authData.onChainRegistration?.did || currentUser.did,
+                authData.onChainRegistration?.role || currentUser.role,
+                { required: true }
+            );
+        }
+
+        persistAuthSession();
+        showLoading(false);
+        redirectToRoleDashboard();
+    } catch (error) {
+        clearClientAuthSession();
+        await invalidateServerSession(pendingSessionId);
+        throw error;
+    }
+}
+
+async function handleAuthFlowFailure(error, errorElementId) {
+    showLoading(false);
+    clearClientAuthSession();
+
+    if (isMetaMaskRejectedError(error)) {
+        showError(errorElementId, MM_REJECTED_MSG);
+        if (errorElementId === 'registration-error') {
+            setAuthMode('register');
+            try {
+                await refreshWalletCheck();
+            } catch (_) { /* */ }
+            if (currentWalletAddress) showAuthForm({ forceRegister: true });
+        } else {
+            setAuthMode('login');
+            if (currentWalletAddress) showAuthForm({ forceLogin: true });
+        }
+        return;
+    }
+
+    showError(errorElementId, String(error?.message || error || 'Napaka pri avtentikaciji'));
+    if (currentWalletAddress) {
+        try {
+            await refreshWalletCheck();
+        } catch (_) { /* */ }
+        if (errorElementId === 'registration-error') {
+            showAuthForm({ forceRegister: true });
+        } else {
+            showAuthForm({ forceLogin: true });
+        }
+    }
+}
+
 async function connectMetaMask() {
     try {
         clearError('metamask-error');
+        clearError('registration-error');
+        clearError('login-error');
         if (!window.ethereum) {
             showError('metamask-error', 'MetaMask ni nameščen.');
             return;
@@ -110,11 +236,16 @@ async function connectMetaMask() {
         document.getElementById('wallet-preview').innerHTML =
             `<div class="wallet-info"><p class="label">Denarnica</p><p class="address">${currentWalletAddress}</p></div>`;
 
-        const checkResponse = await fetch(`/api/auth/check-wallet?walletAddress=${encodeURIComponent(currentWalletAddress)}`);
-        walletCheck = await checkResponse.json();
-        if (!checkResponse.ok) throw new Error('Napaka pri preverjanju denarnice');
+        await refreshWalletCheck();
+        if (!walletCheck) throw new Error('Napaka pri preverjanju denarnice');
 
-        if (walletCheck.registered && walletCheck.hasWaltId) {
+        if (isPendingOnChainRegistration()) {
+            setAuthMode('register');
+            showError(
+                'registration-error',
+                'Registracija še ni dokončana. Vpišite geslo in v MetaMask odobrite transakcijo registerUser.'
+            );
+        } else if (walletCheck.registered && walletCheck.hasWaltId) {
             setAuthMode('login');
         } else {
             setAuthMode('register');
@@ -126,6 +257,10 @@ async function connectMetaMask() {
         }
         showAuthForm();
     } catch (e) {
+        if (isMetaMaskRejectedError(e)) {
+            showError('metamask-error', MM_REJECTED_MSG);
+            return;
+        }
         showError('metamask-error', e.message);
     }
 }
@@ -147,24 +282,24 @@ async function loginExistingUser() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
-        currentSessionId = data.sessionId;
-        currentUser = data.user;
-        sessionStorage.setItem('sessionId', currentSessionId);
-        sessionStorage.setItem('user', JSON.stringify(currentUser));
-        if (data.needsOnChainRegistration && window.BlockchainMetaMask) {
-            updateLoadingStatus('MetaMask (Sepolia)...');
-            await BlockchainMetaMask.ensureOnChainUser(
-                currentSessionId,
-                data.onChainRegistration?.did || currentUser.did,
-                data.onChainRegistration?.role || currentUser.role
-            );
-        }
-        showLoading(false);
-        redirectToRoleDashboard();
+
+        await finalizeAuthenticatedSession(data, { errorElementId: 'login-error' });
     } catch (e) {
-        showLoading(false);
-        showError('login-error', e.message);
+        await handleAuthFlowFailure(e, 'login-error');
     }
+}
+
+async function completeOnChainAfterPartialRegistration(email, password) {
+    showLoading(true, 'Potrditev v MetaMask...');
+    const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletAddress: currentWalletAddress, waltEmail: email, password })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+
+    await finalizeAuthenticatedSession(data, { errorElementId: 'registration-error' });
 }
 
 async function completeRegistration() {
@@ -177,11 +312,19 @@ async function completeRegistration() {
         const passwordConfirm = document.getElementById('password-confirm').value;
 
         if (!currentWalletAddress) return showError('registration-error', 'Najprej MetaMask.');
-        if (!role || !companyName || !email || !password) return showError('registration-error', 'Izpolnite vsa polja.');
+        if (!email || !password) return showError('registration-error', 'Vpišite email in geslo.');
+
+        if (isPendingOnChainRegistration()) {
+            if (password.length < 8) return showError('registration-error', 'Geslo: min. 8 znakov.');
+            await completeOnChainAfterPartialRegistration(email, password);
+            return;
+        }
+
+        if (!role || !companyName) return showError('registration-error', 'Izpolnite vsa polja.');
         if (password.length < 8) return showError('registration-error', 'Geslo: min. 8 znakov.');
         if (password !== passwordConfirm) return showError('registration-error', 'Gesli se ne ujemata.');
         if (walletCheck?.registered && walletCheck?.hasWaltId) {
-            return showError('registration-error', 'Uporabite zavihek Prijava.');
+            return showError('registration-error', 'Račun že obstaja — uporabite Prijava.');
         }
 
         showLoading(true, 'Registracija...');
@@ -194,31 +337,23 @@ async function completeRegistration() {
         if (!mmRes.ok) throw new Error(mmData.error);
         if (mmData.alreadyRegistered) throw new Error('Denarnica že obstaja — Prijava.');
 
-        currentSessionId = mmData.sessionId;
         updateLoadingStatus('Walt.id...');
         const waltRes = await fetch('/api/auth/register-walt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId: currentSessionId, waltEmail: email, password })
+            body: JSON.stringify({ sessionId: mmData.sessionId, waltEmail: email, password })
         });
         const waltData = await waltRes.json();
         if (!waltRes.ok) throw new Error(waltData.error);
-        currentUser = waltData.user;
-        sessionStorage.setItem('sessionId', currentSessionId);
-        sessionStorage.setItem('user', JSON.stringify(currentUser));
-        if (waltData.needsOnChainRegistration && window.BlockchainMetaMask) {
-            updateLoadingStatus('MetaMask (Sepolia)...');
-            await BlockchainMetaMask.ensureOnChainUser(
-                currentSessionId,
-                waltData.onChainRegistration?.did || currentUser.did,
-                waltData.onChainRegistration?.role || currentUser.role
-            );
-        }
-        showLoading(false);
-        redirectToRoleDashboard();
+
+        await finalizeAuthenticatedSession({
+            sessionId: mmData.sessionId,
+            user: waltData.user,
+            needsOnChainRegistration: waltData.needsOnChainRegistration,
+            onChainRegistration: waltData.onChainRegistration
+        }, { errorElementId: 'registration-error' });
     } catch (e) {
-        showLoading(false);
-        showError('registration-error', e.message);
+        await handleAuthFlowFailure(e, 'registration-error');
     }
 }
 
@@ -230,16 +365,15 @@ async function getUserInfo(sessionId) {
 
 async function logout() {
     try {
-        if (currentSessionId) {
-            await fetch('/api/auth/logout', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionId: currentSessionId })
-            });
+        const sessionId = currentSessionId || sessionStorage.getItem('sessionId');
+        if (sessionId) {
+            await invalidateServerSession(sessionId);
         }
         await disconnectMetaMask?.();
     } finally {
         sessionStorage.clear();
+        currentSessionId = null;
+        currentUser = null;
         location.href = '/';
     }
 }

@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS users (
     walt_email VARCHAR(255),
     walt_api_cookie TEXT,
     session_id VARCHAR(255) UNIQUE,
+    jazmp_approved BOOLEAN DEFAULT FALSE,
+    jazmp_approved_at TIMESTAMP,
+    jazmp_approved_by VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -29,6 +32,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_users_session_id ON users(session_id);
+CREATE INDEX IF NOT EXISTS idx_users_jazmp_approved ON users(jazmp_approved);
+
+-- Migracija obstoječih baz (idempotentno)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS jazmp_approved BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS jazmp_approved_at TIMESTAMP;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS jazmp_approved_by VARCHAR(255);
+UPDATE users SET jazmp_approved = TRUE WHERE role = 'regulator' AND (jazmp_approved IS NULL OR jazmp_approved = FALSE);
 
 -- ===== MEDICINES TABLE =====
 CREATE TABLE IF NOT EXISTS medicines (

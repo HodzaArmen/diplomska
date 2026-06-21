@@ -10,12 +10,18 @@ async function ensureDashboardSession(requiredRole) {
         return null;
     }
     const validateResponse = await fetch(`/api/auth/validate-session?sessionId=${encodeURIComponent(sessionId)}`);
-    if (!validateResponse.ok || !(await validateResponse.json()).valid) {
+    const validation = validateResponse.ok ? await validateResponse.json() : { valid: false };
+    if (!validation.valid) {
         sessionStorage.clear();
         window.location.href = '/';
         return null;
     }
-    let user = JSON.parse(userJson);
+    if (!validation.readyForDashboard) {
+        sessionStorage.clear();
+        window.location.href = '/?auth=pending-onchain';
+        return null;
+    }
+    let user = validation.user || JSON.parse(userJson);
     const userInfoResponse = await fetch(`/api/auth/user-info?sessionId=${encodeURIComponent(sessionId)}`);
     if (userInfoResponse.ok) {
         const userInfo = await userInfoResponse.json();
@@ -92,4 +98,67 @@ function closeMedicineDetailPanel() {
         panel.style.display = 'none';
         panel.innerHTML = '';
     }
+}
+
+const JAZMP_APPROVAL_ROLES = ['manufacturer', 'distributor', 'pharmacy'];
+
+function userNeedsJazmpApproval(user) {
+    return JAZMP_APPROVAL_ROLES.includes(user?.role);
+}
+
+function isUserJazmpApproved(user) {
+    if (!user) return false;
+    if (user.role === 'regulator') return true;
+    return Boolean(user.jazmpApproved);
+}
+
+/**
+ * Prikaže opozorilo in onemogoči ustvarjanje/pošiljanje, dokler JAZMP ne potrdi računa.
+ * @returns {boolean} true če je uporabnik odobren
+ */
+function setupJazmpApprovalGate(user, options = {}) {
+    if (!userNeedsJazmpApproval(user) || isUserJazmpApproved(user)) {
+        return true;
+    }
+
+    const main = document.querySelector('main.container, main.dashboard-layout');
+    if (main && !document.getElementById('jazmp-pending-banner')) {
+        const banner = document.createElement('div');
+        banner.id = 'jazmp-pending-banner';
+        banner.className = 'jazmp-pending-banner';
+        banner.innerHTML = `
+            <strong>Čakanje na potrditev JAZMP</strong>
+            <p>Vaš račun še ni odobren. Ustvarjanje zdravil in pošiljanje pošiljk sta onemogočena, dokler regulator (JAZMP) ne potrdi vaše registracije.</p>
+        `;
+        main.insertBefore(banner, main.firstChild);
+    }
+
+    const selectors = options.disableSelectors || [
+        '#btn-create-medicine',
+        '#btn-send-delivery',
+        '#btn-send-forward',
+        '#create-medicine-section input',
+        '#create-medicine-section select',
+        '#create-medicine-section textarea',
+        '#send-delivery-section input',
+        '#send-delivery-section select',
+        '#forward-send-section input',
+        '#forward-send-section select'
+    ];
+
+    selectors.forEach((sel) => {
+        document.querySelectorAll(sel).forEach((el) => {
+            if ('disabled' in el) el.disabled = true;
+        });
+    });
+
+    if (options.lockCreateSection !== false) {
+        const createCard = document.getElementById('create-medicine-section')
+            || document.querySelector('section.dashboard-card:has(#btn-create-medicine)');
+        if (createCard && !createCard.classList.contains('jazmp-locked')) {
+            createCard.classList.add('jazmp-locked');
+        }
+    }
+
+    return false;
 }

@@ -394,7 +394,7 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
             ${detailRow('Serija', escapeHtml(medicine.batchNumber))}
             ${detailRow('Rok uporabe', formatDisplayDate(medicine.expiryDate))}
             ${detailRow('Zaloga / količina', escapeHtml(stockText))}
-            ${onChain ? detailRow('Lastnik (veriga)', escapeHtml(medicine.onChain?.currentHolderLabel || onChain.currentHolder || '—')) : ''}
+            ${onChain ? detailRow('Lastnik', escapeHtml(medicine.onChain?.currentHolderLabel || onChain.currentHolder || '—')) : ''}
             ${onChain ? detailRow('Status', `<span class="chain-status-pill">${escapeHtml(chainStatus)}</span>`) : ''}
         </div>`;
 

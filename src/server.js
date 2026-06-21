@@ -145,6 +145,39 @@ function isValidRole(role) {
     return ['manufacturer', 'distributor', 'pharmacy', 'regulator'].includes(role.toLowerCase());
 }
 
+const ROLES_NEEDING_JAZMP = ['manufacturer', 'distributor', 'pharmacy'];
+
+function roleRequiresJazmpApproval(role) {
+    return ROLES_NEEDING_JAZMP.includes(String(role || '').toLowerCase());
+}
+
+function isJazmpApproved(user) {
+    if (!user) return false;
+    if (user.role === 'regulator') return true;
+    return Boolean(user.jazmp_approved);
+}
+
+function rejectIfNotJazmpApproved(user, res) {
+    if (isJazmpApproved(user)) return true;
+    res.status(403).json({
+        error: 'Račun še ni potrjen s strani JAZMP. Počakajte na odobritev regulatorja.',
+        code: 'JAZMP_NOT_APPROVED',
+        jazmpApproved: false
+    });
+    return false;
+}
+
+async function getRegulatorFromSession(sessionId) {
+    if (!sessionId || !(await isSessionValid(sessionId))) {
+        return { error: 'Neveljavna seja', status: 401 };
+    }
+    const user = await selectUserBySessionId(sessionId);
+    if (!user || user.role !== 'regulator') {
+        return { error: 'Dostop samo za regulator (JAZMP)', status: 403 };
+    }
+    return { user };
+}
+
 function sanitizeInput(input) {
     if (typeof input !== 'string') return '';
     return input.trim().substring(0, 255);
@@ -709,6 +742,7 @@ async function establishWaltIdSession(userRecord, waltEmail, password, { allowRe
 }
 
 function formatAuthUserResponse(userRecord, walt = {}) {
+    const jazmpApproved = userRecord.role === 'regulator' || Boolean(userRecord.jazmp_approved);
     return {
         walletAddress: userRecord.wallet_address,
         role: userRecord.role,
@@ -717,7 +751,9 @@ function formatAuthUserResponse(userRecord, walt = {}) {
         waltEmail: walt.waltEmail || userRecord.walt_email || null,
         did: walt.did || userRecord.did,
         walletId: walt.walletId || userRecord.wallet_id,
-        hasWaltSession: Boolean(walt.sessionCookie || userRecord.walt_api_cookie)
+        hasWaltSession: Boolean(walt.sessionCookie || userRecord.walt_api_cookie),
+        jazmpApproved,
+        jazmpApprovedAt: userRecord.jazmp_approved_at || null
     };
 }
 
@@ -807,26 +843,20 @@ app.post('/api/auth/connect-metamask', async (req, res) => {
                 alreadyRegistered: fullyRegistered,
                 completingWalt: !fullyRegistered,
                 sessionId,
-                user: {
-                    walletAddress: user.wallet_address,
-                    role: user.role,
-                    companyName: user.company_name,
-                    email: user.email,
-                    waltEmail: user.walt_email,
-                    did: user.did,
-                    walletId: user.wallet_id
-                }
+                user: formatAuthUserResponse(user)
             });
         }
 
         // Create new user session with cryptographically secure random ID
         const sessionId = generateSecureSessionId();
+        const normalizedRole = role.toLowerCase();
+        const jazmpApprovedOnCreate = normalizedRole === 'regulator';
         
         await pool.query(
             `INSERT INTO users 
-             (wallet_address, role, email, company_name, session_id) 
-             VALUES ($1, $2, $3, $4, $5)`,
-            [normalizedAddress, role.toLowerCase(), sanitizedEmail, sanitizedCompanyName, sessionId]
+             (wallet_address, role, email, company_name, session_id, jazmp_approved) 
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [normalizedAddress, normalizedRole, sanitizedEmail, sanitizedCompanyName, sessionId, jazmpApprovedOnCreate]
         );
 
         const userRecord = await selectUserBySessionId(sessionId);
@@ -843,14 +873,11 @@ app.post('/api/auth/connect-metamask', async (req, res) => {
 
         res.json({
             success: true,
-            message: 'MetaMask connected successfully',
+            message: roleRequiresJazmpApproval(normalizedRole)
+                ? 'MetaMask povezan. Dokončajte Walt.id registracijo — JAZMP mora potrditi račun pred ustvarjanjem in pošiljanjem.'
+                : 'MetaMask connected successfully',
             sessionId,
-            user: {
-                walletAddress: userRecord.wallet_address,
-                role: userRecord.role,
-                companyName: userRecord.company_name,
-                email: userRecord.email
-            }
+            user: formatAuthUserResponse(userRecord)
         });
     } catch (error) {
         console.error('MetaMask connection error:', error.message);
@@ -879,10 +906,23 @@ app.get('/api/auth/check-wallet', async (req, res) => {
         }
 
         const user = userResult.rows[0];
+        let onChainRegistered = false;
+        if (ensureBlockchainRead() && user.wallet_address) {
+            try {
+                const chainUser = await getUserFromBlockchain(user.wallet_address);
+                onChainRegistered = Boolean(chainUser?.registered);
+            } catch {
+                onChainRegistered = false;
+            }
+        }
+        const needsOnChainConfirmation = Boolean(CONTRACT_ADDRESS && user.did && !onChainRegistered);
+
         res.json({
             registered: true,
             hasWaltId: !!(user.did && user.wallet_id),
             hasWaltSession: Boolean(user.walt_api_cookie),
+            onChainRegistered,
+            needsOnChainConfirmation,
             user: {
                 walletAddress: user.wallet_address,
                 role: user.role,
@@ -1001,18 +1041,7 @@ app.get('/api/auth/user-info', async (req, res) => {
 
         res.json({
             success: true,
-            user: {
-                walletAddress: userRecord.wallet_address,
-                role: userRecord.role,
-                companyName: userRecord.company_name,
-                email: userRecord.email,
-                did: userRecord.did,
-                walletId: userRecord.wallet_id,
-                waltEmail: userRecord.walt_email,
-                hasWaltSession: Boolean(userRecord.walt_api_cookie),
-                walletConnectedAt: userRecord.wallet_connected_at,
-                waltIdRegisteredAt: userRecord.walt_id_registered_at
-            }
+            user: formatAuthUserResponse(userRecord)
         });
     } catch (error) {
         console.error('Get user info error:', error.message);
@@ -1064,7 +1093,9 @@ app.get('/api/profile', async (req, res) => {
                 waltEmail: u.walt_email,
                 hasWaltSession: Boolean(u.walt_api_cookie),
                 walletConnectedAt: u.wallet_connected_at,
-                waltIdRegisteredAt: u.walt_id_registered_at
+                waltIdRegisteredAt: u.walt_id_registered_at,
+                jazmpApproved: isJazmpApproved(u),
+                jazmpApprovedAt: u.jazmp_approved_at || null
             },
             onChainUser,
             blockchain: {
@@ -1215,7 +1246,35 @@ app.get('/api/auth/validate-session', async (req, res) => {
             return res.status(401).json({ error: 'Invalid or expired session', valid: false });
         }
 
-        res.json({ valid: true });
+        const userResult = await pool.query(
+            'SELECT * FROM users WHERE session_id = $1',
+            [sessionId]
+        );
+        if (userResult.rows.length === 0) {
+            return res.status(401).json({ error: 'Invalid or expired session', valid: false });
+        }
+
+        const userRecord = userResult.rows[0];
+        let onChainRegistered = false;
+        if (ensureBlockchainRead() && userRecord.wallet_address) {
+            try {
+                const chainUser = await getUserFromBlockchain(userRecord.wallet_address);
+                onChainRegistered = Boolean(chainUser?.registered);
+            } catch {
+                // veriga trenutno nedosegljiva — ne smemo spustiti na dashboard brez potrditve
+            }
+        }
+
+        const requiresOnChainRegistration = Boolean(CONTRACT_ADDRESS && userRecord.did);
+        const readyForDashboard = !requiresOnChainRegistration || onChainRegistered;
+
+        res.json({
+            valid: true,
+            readyForDashboard,
+            requiresOnChainRegistration: requiresOnChainRegistration && !onChainRegistered,
+            onChainRegistered,
+            user: readyForDashboard ? formatAuthUserResponse(userRecord) : null
+        });
     } catch (error) {
         console.error('Session validation error:', error.message);
         res.status(500).json({ error: error.message, valid: false });
@@ -1440,6 +1499,8 @@ app.post('/api/medicines/create', async (req, res) => {
         }
 
         const user = userResult.rows[0];
+
+        if (!rejectIfNotJazmpApproved(user, res)) return;
 
         if (!user.did) {
             return res.status(400).json({
@@ -1712,6 +1773,8 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
 
         const manufacturer = userResult.rows[0];
 
+        if (!rejectIfNotJazmpApproved(manufacturer, res)) return;
+
         const distributorResult = await pool.query(
             'SELECT * FROM users WHERE wallet_address = $1 AND role = $2',
             [targetDistributorWallet, 'distributor']
@@ -1719,6 +1782,14 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
 
         if (distributorResult.rows.length === 0) {
             return res.status(404).json({ error: 'Distributor ni registriran' });
+        }
+
+        const distributor = distributorResult.rows[0];
+        if (!isJazmpApproved(distributor)) {
+            return res.status(403).json({
+                error: 'Izbrani distributor še ni potrjen s strani JAZMP.',
+                code: 'TARGET_NOT_JAZMP_APPROVED'
+            });
         }
 
         const medicineResult = await pool.query(
@@ -1772,7 +1843,6 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
         }
 
         const deliveryId = `DELIVERY-${crypto.randomUUID()}`;
-        const distributor = distributorResult.rows[0];
         const distributorName = targetDistributorName || distributor.company_name;
 
         if (!manufacturer.walt_api_cookie) {
@@ -2532,6 +2602,9 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized' });
         }
 
+        const distributor = distributorResult.rows[0];
+        if (!rejectIfNotJazmpApproved(distributor, res)) return;
+
         const pharmacyResult = await pool.query(
             'SELECT * FROM users WHERE wallet_address = $1 AND role = $2',
             [targetPharmacyWallet, 'pharmacy']
@@ -2539,6 +2612,14 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
 
         if (pharmacyResult.rows.length === 0) {
             return res.status(404).json({ error: 'Lekarna ni registrirana' });
+        }
+
+        const pharmacy = pharmacyResult.rows[0];
+        if (!isJazmpApproved(pharmacy)) {
+            return res.status(403).json({
+                error: 'Izbrana lekarna še ni potrjena s strani JAZMP.',
+                code: 'TARGET_NOT_JAZMP_APPROVED'
+            });
         }
 
         const available = await getDistributorAvailableQuantity(medicineId, distributorWallet);
@@ -2553,8 +2634,6 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
             [medicineId]
         );
         const medicine = medicineResult.rows[0];
-        const distributor = distributorResult.rows[0];
-        const pharmacy = pharmacyResult.rows[0];
 
         if (!distributor.walt_api_cookie) {
             return res.status(400).json({
@@ -2986,6 +3065,91 @@ app.get('/api/regulator/medicines', async (req, res) => {
     }
 });
 
+// JAZMP — pregled in potrditev registriranih akterjev
+app.get('/api/regulator/pending-users', async (req, res) => {
+    try {
+        const { sessionId } = req.query;
+        const gate = await getRegulatorFromSession(sessionId);
+        if (gate.error) {
+            return res.status(gate.status).json({ error: gate.error });
+        }
+
+        const result = await pool.query(
+            `SELECT wallet_address, role, company_name, email, did, created_at,
+                    jazmp_approved, jazmp_approved_at
+             FROM users
+             WHERE role IN ('manufacturer', 'distributor', 'pharmacy')
+             ORDER BY jazmp_approved ASC, created_at DESC`
+        );
+
+        res.json({
+            success: true,
+            users: result.rows.map((row) => ({
+                walletAddress: row.wallet_address,
+                role: row.role,
+                companyName: row.company_name,
+                email: row.email,
+                did: row.did,
+                createdAt: row.created_at,
+                jazmpApproved: Boolean(row.jazmp_approved),
+                jazmpApprovedAt: row.jazmp_approved_at
+            }))
+        });
+    } catch (error) {
+        console.error('Regulator pending users error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/regulator/approve-user', async (req, res) => {
+    try {
+        const { sessionId, targetWallet } = req.body;
+        const gate = await getRegulatorFromSession(sessionId);
+        if (gate.error) {
+            return res.status(gate.status).json({ error: gate.error });
+        }
+
+        if (!targetWallet || !isValidEthereumAddress(targetWallet)) {
+            return res.status(400).json({ error: 'Neveljaven naslov denarnice' });
+        }
+
+        const target = await loadUserByWallet(targetWallet.toLowerCase());
+        if (!target || !roleRequiresJazmpApproval(target.role)) {
+            return res.status(404).json({ error: 'Uporabnik ni najden ali ne potrebuje JAZMP potrditve' });
+        }
+
+        if (isJazmpApproved(target)) {
+            return res.json({
+                success: true,
+                message: 'Uporabnik je že potrjen',
+                user: formatAuthUserResponse(target)
+            });
+        }
+
+        await pool.query(
+            `UPDATE users
+             SET jazmp_approved = TRUE,
+                 jazmp_approved_at = CURRENT_TIMESTAMP,
+                 jazmp_approved_by = $1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE wallet_address = $2`,
+            [gate.user.wallet_address, target.wallet_address]
+        );
+
+        const updated = await loadUserByWallet(target.wallet_address);
+        console.log(`✓ JAZMP potrdil: ${updated.role} ${updated.company_name} (${updated.wallet_address})`);
+
+        res.json({
+            success: true,
+            message: `${updated.company_name} je potrjen za delovanje v sistemu`,
+            user: formatAuthUserResponse(updated)
+        });
+    } catch (error) {
+        console.error('Regulator approve user error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Javni pregled porekla (pacient) — brez prijave
 const publicTraceLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -3166,7 +3330,9 @@ app.get('/api/distributors/list', async (req, res) => {
         }
 
         const distributors = await pool.query(
-            'SELECT wallet_address, company_name FROM users WHERE role = $1 ORDER BY company_name',
+            `SELECT wallet_address, company_name FROM users
+             WHERE role = $1 AND jazmp_approved = TRUE
+             ORDER BY company_name`,
             ['distributor']
         );
 
@@ -3199,7 +3365,9 @@ app.get('/api/pharmacies/list', async (req, res) => {
 
         // Get all pharmacy users
         const pharmacies = await pool.query(
-            'SELECT wallet_address, company_name FROM users WHERE role = $1 ORDER BY company_name',
+            `SELECT wallet_address, company_name FROM users
+             WHERE role = $1 AND jazmp_approved = TRUE
+             ORDER BY company_name`,
             ['pharmacy']
         );
 

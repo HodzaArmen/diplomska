@@ -54,16 +54,26 @@ async function ensureTargetNetwork() {
             params: [{ chainId: config.chainIdHex }]
         });
     } catch (error) {
+        if (isMetaMaskUserRejection(error)) {
+            throw error;
+        }
         if (error.code === 4902) {
-            await provider.request({
-                method: 'wallet_addEthereumChain',
-                params: [{
-                    chainId: config.chainIdHex,
-                    chainName: networkName,
-                    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-                    rpcUrls: [rpcUrl]
-                }]
-            });
+            try {
+                await provider.request({
+                    method: 'wallet_addEthereumChain',
+                    params: [{
+                        chainId: config.chainIdHex,
+                        chainName: networkName,
+                        nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+                        rpcUrls: [rpcUrl]
+                    }]
+                });
+            } catch (addError) {
+                if (isMetaMaskUserRejection(addError)) {
+                    throw addError;
+                }
+                throw new Error(`Preklopite MetaMask na ${networkName} (chainId ${config.chainId})`);
+            }
         } else {
             throw new Error(`Preklopite MetaMask na ${networkName} (chainId ${config.chainId})`);
         }
@@ -195,8 +205,31 @@ async function confirmBlockchainTx(sessionId, payload) {
     return data;
 }
 
-async function ensureOnChainUser(sessionId, did, role) {
+const META_MASK_REJECTED_MSG = 'Napaka pri odobritvi transakcije v MetaMask.';
+
+function isMetaMaskUserRejection(error) {
+    if (!error) return false;
+    const code = error.code ?? error.info?.error?.code ?? error.error?.code;
+    if (code === 4001 || code === '4001' || code === 'ACTION_REJECTED') return true;
+    const msg = [error.message, error.reason, error.shortMessage, error.info?.error?.message]
+        .filter(Boolean)
+        .join(' ');
+    return /user rejected|user denied|denied transaction|request rejected|rejected the request|preklic/i.test(msg);
+}
+
+function formatOnChainError(error) {
+    if (isMetaMaskUserRejection(error)) {
+        return META_MASK_REJECTED_MSG;
+    }
+    return error?.message || 'On-chain registracija ni uspela';
+}
+
+async function ensureOnChainUser(sessionId, did, role, options = {}) {
+    const { required = false } = options;
     if (!sessionId || !did || !role || !window.ethereum) {
+        if (required) {
+            throw new Error('On-chain registracija ni mogoča — manjka seja, DID ali MetaMask.');
+        }
         return { ok: false, skipped: true };
     }
     try {
@@ -214,8 +247,12 @@ async function ensureOnChainUser(sessionId, did, role) {
         }
         return result;
     } catch (error) {
-        console.warn('On-chain registracija:', error.message);
-        return { ok: false, error: error.message };
+        const message = formatOnChainError(error);
+        if (required) {
+            throw new Error(message);
+        }
+        console.warn('On-chain registracija:', message);
+        return { ok: false, error: message };
     }
 }
 
@@ -268,5 +305,7 @@ window.BlockchainMetaMask = {
     ensureOnChainUser,
     signMedicineAndConfirm,
     signHandoffAndConfirm,
-    resetContractCache
+    resetContractCache,
+    isMetaMaskUserRejection,
+    META_MASK_REJECTED_MSG
 };

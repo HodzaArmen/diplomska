@@ -1402,6 +1402,39 @@ body.dashboard-page {
     border: 1px solid #fcd34d;
 }
 
+.jazmp-pending-banner {
+    grid-column: 1 / -1;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+    border-radius: var(--radius);
+    background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+    border: 1px solid #fdba74;
+    color: #9a3412;
+}
+
+.jazmp-pending-banner strong {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-size: 1rem;
+}
+
+.jazmp-pending-banner p {
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+
+.dashboard-card.jazmp-locked {
+    opacity: 0.72;
+    pointer-events: none;
+    user-select: none;
+}
+
+.dashboard-card.jazmp-locked .jazmp-pending-banner {
+    pointer-events: auto;
+    opacity: 1;
+}
+
 .detail-trust-banner p {
     margin: 0.2rem 0 0;
     color: var(--text-secondary);

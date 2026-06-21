@@ -75,6 +75,24 @@ function renderProfilePanel(data) {
     const meta = roleMeta(p.role);
     const memberSince = fmtDate(p.waltIdRegisteredAt || p.walletConnectedAt);
     const networkLabel = chain.network || 'Blockchain';
+    const needsJazmp = ['manufacturer', 'distributor', 'pharmacy'].includes(p.role);
+    const jazmpBlock = needsJazmp
+        ? (p.jazmpApproved
+            ? `<div class="profile-chain-card profile-chain-card--ok">
+                    <span class="profile-chain-icon">✓</span>
+                    <div>
+                        <strong>Potrditev JAZMP</strong>
+                        <p class="text-muted">Račun je odobren${p.jazmpApprovedAt ? ` (${fmtDate(p.jazmpApprovedAt)})` : ''}.</p>
+                    </div>
+               </div>`
+            : `<div class="profile-chain-card profile-chain-card--pending">
+                    <span class="profile-chain-icon">!</span>
+                    <div>
+                        <strong>Čaka na potrditev JAZMP</strong>
+                        <p class="text-muted">Ustvarjanje in pošiljanje sta onemogočena, dokler regulator ne potrdi vaše registracije.</p>
+                    </div>
+               </div>`)
+        : '';
 
     const blockchainBlock = onChain.registered
         ? `<div class="profile-chain-card profile-chain-card--ok">
@@ -157,6 +175,11 @@ function renderProfilePanel(data) {
                     ${memberSince ? `<div class="profile-dl-row"><dt>V sistemu od</dt><dd>${memberSince}</dd></div>` : ''}
                 </dl>
             </section>
+
+            ${needsJazmp ? `<section class="profile-card profile-card--jazmp">
+                <h4 class="profile-card-title">JAZMP</h4>
+                ${jazmpBlock}
+            </section>` : ''}
 
             <section class="profile-card profile-card--chain">
                 <h4 class="profile-card-title">Blockchain</h4>
