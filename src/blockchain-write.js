@@ -1,5 +1,5 @@
 /**
- * blockchain-write.js — strežniški podpis TX na Anvil (dev) ali z CHAIN_AUTO_SIGN=true
+ * blockchain-write.js — strežniški podpis TX le ob CHAIN_AUTO_SIGN=true
  * Uporablja znane Anvil dev ključe za račune #0–#9 (Foundry privzeti).
  */
 
@@ -14,9 +14,8 @@ const ANVIL_DEV_KEYS = new Map([
 ]);
 
 export function isChainAutoSignEnabled() {
-    if (process.env.CHAIN_AUTO_SIGN === 'false') return false;
     if (process.env.CHAIN_AUTO_SIGN === 'true') return true;
-    return Number(process.env.CHAIN_ID || 11155111) === 31337;
+    return false;
 }
 
 function resolvePrivateKey(walletAddress) {

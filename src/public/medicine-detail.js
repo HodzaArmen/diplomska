@@ -53,23 +53,6 @@ function roleBadge(role) {
     return `<span class="role-badge ${cls}">${escapeHtml(labelRole(role))}</span>`;
 }
 
-function renderJourneyPathBanner(medicine) {
-    const summary = medicine.journeySummary;
-    if (!summary) {
-        return `<div class="detail-trust-banner detail-trust-banner--warn">
-            <span class="detail-trust-icon">⚠</span>
-            <p><strong>Pot na verigi še ni popolna.</strong> Uradna zgodovina premikov še ni zabeležena na blockchainu.</p>
-        </div>`;
-    }
-    return `<div class="detail-trust-banner detail-trust-banner--chain">
-        <span class="detail-trust-icon">🔗</span>
-        <div>
-            <p class="journey-path-label">Uradna pot (veriga ${escapeHtml(medicine.dataSources?.chainNetwork || 'blockchain')})</p>
-            <p class="journey-path-summary"><strong>${escapeHtml(summary)}</strong></p>
-        </div>
-    </div>`;
-}
-
 const RECEIVE_ACTIONS = new Set(['RECEIVED_BY_DISTRIBUTOR', 'RECEIVED_AT_PHARMACY']);
 const SEND_ACTIONS = new Set(['SENT_TO_DISTRIBUTOR', 'FORWARDED_TO_PHARMACY']);
 
@@ -85,17 +68,13 @@ function renderJourneyPartnerCell(step) {
     return party;
 }
 
-function renderJourneyStepsTable(steps, compact = false) {
+function renderJourneyStepsTable(steps) {
     if (!steps?.length) {
         return `<p class="text-muted">Na verigi še ni zabeleženih korakov poti.</p>`;
     }
     const rows = steps.map((s) => {
         const who = `${escapeHtml(s.actor?.name || '—')} ${roleBadge(s.actor?.role)}`;
         const partner = renderJourneyPartnerCell(s);
-        const proof = s.proof?.vcRef
-            ? '<span class="proof-ok" title="VC referenca na verigi">VC ✓</span>'
-            : (s.proof?.source === 'blockchain' ? '<span class="proof-ok">Veriga ✓</span>' : '—');
-        const tech = compact ? '' : `<td class="journey-proof">${proof}</td>`;
 
         return `<tr>
             <td class="journey-step-num">${s.step}</td>
@@ -104,15 +83,13 @@ function renderJourneyStepsTable(steps, compact = false) {
             <td>${partner}</td>
             <td>${s.quantity != null ? `${s.quantity} en` : '—'}</td>
             <td>${formatDisplayDateTime(s.timestamp)}</td>
-            ${tech}
         </tr>
-        <tr class="journey-summary-row"><td colspan="${compact ? 6 : 7}">${escapeHtml(s.summary)}</td></tr>`;
+        <tr class="journey-summary-row"><td colspan="6">${escapeHtml(s.summary)}</td></tr>`;
     }).join('');
 
-    const proofCol = compact ? '' : '<th>Dokaz</th>';
     return `<table class="journey-table">
         <thead><tr>
-            <th>#</th><th>Dogodek</th><th>Kdo</th><th>Partner</th><th>Kol.</th><th>Kdaj</th>${proofCol}
+            <th>#</th><th>Dogodek</th><th>Kdo</th><th>Partner</th><th>Kol.</th><th>Kdaj</th>
         </tr></thead>
         <tbody>${rows}</tbody>
     </table>`;
@@ -163,12 +140,12 @@ function renderHumanOverview(medicine, highlightDelivery, chainNetwork) {
 
     let lead = `Zdravilo <strong>${escapeHtml(medicine.name)}</strong> (serija ${escapeHtml(medicine.batchNumber)}) je proizvedlo <strong>${escapeHtml(medicine.manufacturerName || '—')}</strong>.`;
 
-    if (medicine.journeySummary) {
-        lead += ` Pot na verigi: <strong>${escapeHtml(medicine.journeySummary)}</strong>.`;
-    } else if (highlightDelivery) {
+    if (highlightDelivery) {
         lead += ` Pregledujete pošiljko <strong>${highlightDelivery.quantity} en</strong> (${labelDeliveryStatus(highlightDelivery.status)}): ${escapeHtml(highlightDelivery.sourceName || labelRole(highlightDelivery.sourceRole))} → ${escapeHtml(highlightDelivery.targetName || labelRole(highlightDelivery.targetRole))}.`;
+    } else if (medicine.journeySummary) {
+        lead += ` Pot: <strong>${escapeHtml(medicine.journeySummary)}</strong>.`;
     } else if (onChain?.medicineId) {
-        lead += ` Trenutni lastnik na verigi (${escapeHtml(chainNetwork)}): <strong>${escapeHtml(owner)}</strong>, status <strong>${escapeHtml(status)}</strong>.`;
+        lead += ` Trenutni lastnik: <strong>${escapeHtml(owner)}</strong>.`;
     }
 
     return `<p class="detail-overview-lead">${lead}</p>`;
@@ -242,38 +219,74 @@ function renderVcAssistantSections(sections, compact = false) {
     }).join('');
 }
 
+function transportVcTitle(delivery) {
+    const event = delivery.transportVcClaims?.eventType;
+    const byEvent = {
+        SENT_TO_DISTRIBUTOR: 'Odpremljeno k distributorju',
+        FORWARDED_TO_PHARMACY: 'Odpremljeno v lekarno'
+    };
+    const label = byEvent[event] || 'Transportna pošiljka';
+    const from = delivery.sourceName || labelRole(delivery.sourceRole);
+    const to = delivery.targetName || delivery.targetPharmacyName || labelRole(delivery.targetRole);
+    if (from && to) {
+        return `Transportno potrdilo — ${label} (${from} → ${to})`;
+    }
+    return `Transportno potrdilo — ${label}`;
+}
+
+function renderCredentialsPanel(medicine) {
+    const allDeliveries = medicine.deliveries || [];
+    let html = renderVcBlock(
+        medicine.medicineVcClaims,
+        'Potrdilo o zdravilu (proizvajalec)',
+        medicine.vcSigned
+    );
+
+    if (allDeliveries.length === 0) {
+        html += '<p class="text-muted">Ni zabeleženih pošiljk s transportnimi potrdili.</p>';
+        return html;
+    }
+
+    html += allDeliveries.map((d) => renderVcBlock(
+        d.transportVcClaims,
+        transportVcTitle(d),
+        d.transportVcVerified
+    )).join('');
+
+    return html;
+}
+
 async function loadVcAssistant(medicineId, sessionId, containerEl, opts = {}) {
     if (!containerEl) return;
     containerEl.hidden = false;
-    containerEl.innerHTML = `<p class="detail-loading">${opts.enhanceAi ? 'AI pripravlja razlago…' : 'Pripravljam povzetek…'}</p>`;
+    containerEl.innerHTML = '<p class="detail-loading">AI pripravlja razlago poti zdravila…</p>';
 
-    let url = `/api/medicines/${encodeURIComponent(medicineId)}/vc-assistant?sessionId=${encodeURIComponent(sessionId)}`;
-    if (opts.deliveryId) url += `&deliveryId=${encodeURIComponent(opts.deliveryId)}`;
-    if (opts.enhanceAi) url += '&enhance=true';
+    let url = `/api/medicines/${encodeURIComponent(medicineId)}/vc-assistant?sessionId=${encodeURIComponent(sessionId)}&enhance=true`;
+    if (opts.deliveryId && !opts.fullMedicine) {
+        url += `&deliveryId=${encodeURIComponent(opts.deliveryId)}`;
+    }
 
     try {
         const res = await fetch(url);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Napaka');
 
-        const exp = data.explanation;
-        let html = '';
-
         if (data.ai?.enhanced && data.ai.aiSummary) {
-            html += `<div class="explain-ai-block">
-                <p class="explain-ai-label">🤖 ${escapeHtml(data.ai.providerLabel || 'AI')} · ${escapeHtml(data.ai.model || '')}</p>
+            containerEl.innerHTML = `<div class="explain-ai-block">
+                <p class="explain-ai-label">Razlaga za uporabnika · ${escapeHtml(data.ai.providerLabel || 'AI')}</p>
                 <div class="vc-assistant-body explain-ai-text">${renderAssistantMarkdown(data.ai.aiSummary)}</div>
             </div>`;
-        } else if (opts.enhanceAi) {
-            const hint = data.ai?.reason || data.aiStatus?.hint || 'AI ni na voljo.';
-            html += `<div class="vc-assistant-setup-hint"><p><strong>AI ni aktiven.</strong> ${escapeHtml(hint)}</p></div>`;
+            return;
         }
 
-        if (!opts.enhanceAi || !data.ai?.enhanced) {
-            html += renderVcAssistantSections(exp.sections, true);
-        }
-
-        containerEl.innerHTML = html || '<p class="text-muted">Ni vsebine.</p>';
+        const hint = data.ai?.reason || data.aiStatus?.hint || 'AI ni na voljo.';
+        const fallback = data.explanation?.sections
+            ?.filter((s) => !s.title.startsWith('Priporočilo'))
+            .map((s) => `## ${s.title}\n\n${s.text}`)
+            .join('\n\n') || '';
+        containerEl.innerHTML = `<div class="vc-assistant-setup-hint">
+            <p><strong>AI trenutno ni na voljo.</strong> ${escapeHtml(hint)}</p>
+        </div>${fallback ? `<div class="vc-assistant-body">${renderAssistantMarkdown(fallback)}</div>` : ''}`;
     } catch (e) {
         containerEl.innerHTML = `<p class="error-message">${escapeHtml(e.message)}</p>`;
     }
@@ -308,7 +321,7 @@ function renderJourneyStepper(timeline, chainNetwork, compact = false) {
         <ol class="journey-stepper">${steps}</ol>`;
 }
 
-function setupDetailTabs(panelEl) {
+function setupDetailTabs(panelEl, onExplainTab) {
     const tabs = panelEl.querySelectorAll('.detail-tab');
     const panels = panelEl.querySelectorAll('.detail-tab-panel');
 
@@ -324,6 +337,9 @@ function setupDetailTabs(panelEl) {
                 p.hidden = !active;
                 p.classList.toggle('detail-tab-panel--active', active);
             });
+            if (id === 'explain' && typeof onExplainTab === 'function') {
+                onExplainTab();
+            }
         });
     });
 }
@@ -371,6 +387,7 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
 
     let deliveries = medicine.deliveries || [];
     let timeline = dedupeTimeline(medicine.supplyChainHistory || []);
+    const allDeliveries = medicine.deliveries || [];
 
     if (opts.deliveryId) {
         deliveries = deliveries.filter((d) => d.deliveryId === opts.deliveryId);
@@ -425,7 +442,6 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
 
             <div class="detail-tab-panels">
                 <section class="detail-tab-panel detail-tab-panel--active" data-panel="overview" role="tabpanel">
-                    ${renderJourneyPathBanner(medicine)}
                     ${renderHumanOverview(medicine, highlightDelivery, chainNetwork)}
                     ${overviewFacts}
                     ${(opts.viewerRole === 'pharmacy' || opts.viewerRole === 'regulator') ? renderPublicTraceLink(medicine.medicineId, medicine.batchNumber) : ''}
@@ -447,46 +463,33 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
                 </section>
 
                 <section class="detail-tab-panel" data-panel="journey" role="tabpanel" hidden>
-                    ${renderJourneyStepsTable(medicine.journeySteps || [], false)}
+                    ${renderJourneyStepsTable(medicine.journeySteps || [])}
                 </section>
 
                 <section class="detail-tab-panel" data-panel="credentials" role="tabpanel" hidden>
-                    ${renderVcBlock(medicine.medicineVcClaims, 'Potrdilo o zdravilu (proizvajalec)', medicine.vcSigned)}
-                    ${deliveries.filter((d) => d.transportVcClaims || d.transportVcSigned).map((d) =>
-                        renderVcBlock(
-                            d.transportVcClaims,
-                            `Transportno potrdilo — ${labelDeliveryStatus(d.status)}`,
-                            d.transportVcVerified
-                        )
-                    ).join('')}
+                    <p class="detail-tab-intro text-muted">Kriptografsko podpisana potrdila (VC) — eno o izdelavi zdravila in po eno za vsako pošiljko.</p>
+                    ${renderCredentialsPanel({ ...medicine, deliveries: allDeliveries })}
                 </section>
 
                 <section class="detail-tab-panel" data-panel="explain" role="tabpanel" hidden>
-                    <div class="explain-actions">
-                        <button type="button" class="btn btn-secondary btn-sm btn-vc-assistant">Kratek povzetek</button>
-                        <button type="button" class="btn btn-primary btn-sm btn-vc-assistant-ai">🤖 AI razlaga</button>
-                    </div>
-                    <div class="vc-assistant-output" hidden aria-live="polite"></div>
+                    <p class="detail-tab-intro text-muted">Razlaga poti zdravila v navadnem jeziku — na podlagi potrdil, zapisa na verigi in metapodatkov.</p>
+                    <div class="vc-assistant-output" aria-live="polite"></div>
                 </section>
             </div>
-
-            ${opts.onVerify ? '<footer class="detail-footer"><button type="button" class="btn btn-secondary btn-verify-detail">Preveri VC + blockchain</button></footer>' : ''}
         </div>
     `;
 
-    setupDetailTabs(el.querySelector('.medicine-detail-panel'));
+    const assistantOut = el.querySelector('.vc-assistant-output');
+    let explainLoaded = false;
+    const loadExplain = () => {
+        if (explainLoaded || !assistantOut) return;
+        explainLoaded = true;
+        loadVcAssistant(medicine.medicineId, opts.sessionId, assistantOut, { fullMedicine: true });
+    };
+
+    setupDetailTabs(el.querySelector('.medicine-detail-panel'), loadExplain);
 
     el.querySelector('.btn-close-detail')?.addEventListener('click', closeMedicineDetailPanel);
-    el.querySelector('.btn-verify-detail')?.addEventListener('click', () => opts.onVerify(medicine.medicineId));
-
-    const assistantOut = el.querySelector('.vc-assistant-output');
-    const assistantOpts = { deliveryId: opts.deliveryId, sessionId: opts.sessionId };
-    el.querySelector('.btn-vc-assistant')?.addEventListener('click', () => {
-        loadVcAssistant(medicine.medicineId, opts.sessionId, assistantOut, assistantOpts);
-    });
-    el.querySelector('.btn-vc-assistant-ai')?.addEventListener('click', () => {
-        loadVcAssistant(medicine.medicineId, opts.sessionId, assistantOut, { ...assistantOpts, enhanceAi: true });
-    });
     el.querySelector('.btn-copy-trace-url')?.addEventListener('click', (e) => {
         const input = el.querySelector('.trace-url-input');
         if (input) {

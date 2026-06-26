@@ -2375,8 +2375,7 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
                     : 'Pošiljka sprejeta — VC in veriga preverjena'),
             verification,
             chainPath,
-            chainHandoff,
-            partnerWallet: row.source_wallet
+            chainHandoff
         });
     } catch (error) {
         console.error('Distributor receive delivery error:', error.message);
@@ -2927,8 +2926,7 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
                 ipfsLinks: getIpfsLinks(medicine.ipfs_hash)
             },
             chainPath,
-            chainHandoff,
-            partnerWallet: distWallet
+            chainHandoff
         });
     } catch (error) {
         console.error('Receive delivery error:', error);
@@ -3211,16 +3209,17 @@ app.get('/api/medicines/:medicineId/vc-assistant', async (req, res) => {
             return res.status(403).json({ error: 'Nimate dostopa do tega zdravila' });
         }
 
+        const useFullMedicine = enhance === 'true' || enhance === '1';
         const medicine = await buildMedicineDetailsResponse(medicineId, {
             viewerWallet,
             viewerRole,
-            deliveryId: deliveryId || null
+            deliveryId: useFullMedicine ? null : (deliveryId || null)
         });
         if (!medicine) {
             return res.status(404).json({ error: 'Zdravilo ni najdeno' });
         }
 
-        const explanation = buildVcAssistantExplanation(medicine, viewerRole, deliveryId || null);
+        const explanation = buildVcAssistantExplanation(medicine, viewerRole, useFullMedicine ? null : (deliveryId || null));
         let ai = null;
         if (enhance === 'true' || enhance === '1') {
             ai = await enhanceExplanationWithAi(explanation, medicine);
@@ -3494,77 +3493,6 @@ app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
     }
 });
 
-// 18b. REPUTATION — povratna informacija po prevzemu (članek Kochovski et al.)
-app.post('/api/reputation/submit', async (req, res) => {
-    try {
-        const { sessionId, deliveryId, reviewedWallet, rating, comment } = req.body;
-
-        if (!sessionId || !deliveryId || !reviewedWallet || !rating) {
-            return res.status(400).json({ error: 'Manjkajo obvezna polja (sessionId, deliveryId, reviewedWallet, rating)' });
-        }
-
-        const score = Number(rating);
-        if (!Number.isInteger(score) || score < 1 || score > 5) {
-            return res.status(400).json({ error: 'Ocena mora biti celo število 1–5' });
-        }
-
-        if (!(await isSessionValid(sessionId))) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-
-        const reviewerWallet = await getSessionWallet(sessionId);
-        if (!reviewerWallet) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-
-        const deliveryCheck = await pool.query(
-            `SELECT medicine_id, source_wallet, target_wallet, status
-             FROM deliveries WHERE delivery_id = $1`,
-            [deliveryId]
-        );
-        if (deliveryCheck.rows.length === 0) {
-            return res.status(404).json({ error: 'Dostava ni najdena' });
-        }
-
-        const delivery = deliveryCheck.rows[0];
-        const allowedStatuses = ['RECEIVED', 'DELIVERED'];
-        if (!allowedStatuses.includes(delivery.status)) {
-            return res.status(400).json({ error: 'Oceno lahko podate šele po uspešnem prevzemu' });
-        }
-
-        const isParticipant = reviewerWallet === delivery.target_wallet
-            || reviewerWallet === delivery.source_wallet;
-        if (!isParticipant) {
-            return res.status(403).json({ error: 'Niste udeleženec te dostave' });
-        }
-
-        if (String(reviewedWallet).toLowerCase() !== String(delivery.source_wallet).toLowerCase()) {
-            return res.status(400).json({ error: 'Ocenjujete lahko le pošiljatelja (partnerja)' });
-        }
-
-        await pool.query(
-            `INSERT INTO partner_reputation (medicine_id, delivery_id, reviewer_wallet, reviewed_wallet, rating, comment)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [delivery.medicine_id, deliveryId, reviewerWallet, reviewedWallet, score, comment || null]
-        );
-
-        await pool.query(
-            `INSERT INTO supply_chain_history (medicine_id, delivery_id, action, actor_wallet, actor_role, details)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [delivery.medicine_id, deliveryId, 'PARTNER_REPUTATION', reviewerWallet, 'receiver',
-             JSON.stringify({ reviewedWallet, rating: score, comment: comment || null })]
-        );
-
-        res.json({ success: true, message: 'Hvala za oceno partnerja' });
-    } catch (error) {
-        if (error.code === '42P01') {
-            return res.status(503).json({ error: 'Tabela partner_reputation še ne obstaja — ponovno zaženite DB migracijo' });
-        }
-        console.error('Reputation submit error:', error.message);
-        res.status(500).json({ error: error.message });
-    }
-});
-
 // 19. HEALTH CHECK
 app.get('/api/health', (req, res) => {
     res.json({
@@ -3590,19 +3518,6 @@ async function startServer() {
         // Test database connection
         await pool.query('SELECT NOW()');
         console.log('✓ Database connection successful');
-
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS partner_reputation (
-                id SERIAL PRIMARY KEY,
-                medicine_id VARCHAR(255),
-                delivery_id VARCHAR(255) NOT NULL,
-                reviewer_wallet VARCHAR(255) NOT NULL,
-                reviewed_wallet VARCHAR(255) NOT NULL,
-                rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-                comment TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
 
         const cfg = getIntegrationConfigStatus();
         if (SEPOLIA_RPC_URL && CONTRACT_ADDRESS) {

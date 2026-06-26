@@ -217,22 +217,43 @@ export async function enhanceExplanationWithAi(baseExplanation, medicine) {
         };
     }
 
-    const systemPrompt = `Si strokovni asistent za farmacevtsko sledljivost in W3C Verifiable Credentials (SSI).
-Razloži podatke jasno v slovenščini, za ciljno publiko (proizvajalec/distributer/lekarna).
-Ne izmišljaj podatkov — uporabi samo podani kontekst. Omeni tveganja ponareka, če katera plast manjka.
-Strukturiraj odgovor: 1) Kaj pomeni VC 2) Ali je zanesljivo 3) Kaj storiti naprej. Max 350 besed.`;
+    const systemPrompt = `Si prijazen asistent v aplikaciji za sledljivost zdravil.
+Uporabnik NI tehnična oseba — ne razume blockchain, VC, DID, IPFS.
+Razloži v navadni slovenščini, kratko in jasno:
+1) Kdo je proizvedel zdravilo in kdaj
+2) Kako je potovalo (proizvajalec → distributer → lekarna), korak za korakom
+3) Ali so preverjanja uspela (poreklo, pošiljke, zapis poti) — brez žargona, povej kaj to pomeni za varnost pacienta
+4) Ali je vse v redu ali kaj manjka / je sumljivo
+Ne izmišljuj podatkov. Ne omenjaj OID4VP, JWT, CID. Max 450 besed.`;
+
+    const journeyText = (medicine.journeySteps || [])
+        .map((s) => `- ${s.summary || s.actionLabel}`)
+        .join('\n');
+
+    const transportVcs = (medicine.deliveries || [])
+        .map((d) => {
+            const c = d.transportVcClaims;
+            if (!c) return `- Pošiljka ${d.deliveryId}: transportno potrdilo ni na voljo`;
+            return `- ${c.eventType}: ${c.quantity} en, ${c.senderName || '?'} → ${c.recipientName || '?'}, preverjeno: ${d.transportVcVerified ? 'da' : 'ne'}`;
+        })
+        .join('\n');
 
     const userPrompt = `Zdravilo: ${medicine.name} (${medicine.medicineId})
 Serija: ${medicine.batchNumber}
-VC podpisano (Verifier): ${medicine.vcSigned ? 'da' : 'ne'}
-Na blockchainu: ${Boolean(medicine.onChain?.medicine?.medicineId) ? 'da' : 'ne'}
-IPFS CID: ${medicine.ipfsHash || 'ni'}
-Vloga uporabnika: ${baseExplanation.viewerRole}
+Proizvajalec: ${medicine.manufacturerName}
+Pregleduje: ${baseExplanation.viewerRole}
 
-Strukturirana analiza sistema:
-${baseExplanation.fullText}
+Pot po korakih:
+${journeyText || 'Ni podatkov o poti'}
 
-Podaj razumljivo razlago za uporabnika dashboarda.`;
+Potrdilo o izdelavi (Medicine): preverjeno=${medicine.vcSigned ? 'da' : 'ne'}
+Transportna potrdila:
+${transportVcs || 'Ni pošiljk'}
+
+Zapis na verigi: ${Boolean(medicine.onChain?.medicine?.medicineId) ? 'da' : 'ne'}
+Metapodatki (IPFS) dostopni: ${medicine.ipfsVerification?.accessible ? 'da' : 'ne'}
+
+Napiši razumljivo zgodbo poti tega zdravila za uporabnika dashboarda.`;
 
     const result = await generateAiText({ systemPrompt, userPrompt });
 

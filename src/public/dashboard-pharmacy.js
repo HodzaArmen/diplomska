@@ -196,12 +196,6 @@ async function receiveDelivery(deliveryId) {
         if (data.verification) msg += '\n\n' + formatVerificationAlert(data.verification);
         alert(msg);
 
-        await promptPartnerReputation({
-            sessionId: currentSessionId,
-            deliveryId,
-            partnerWallet: data.partnerWallet
-        });
-
         await loadIncomingDeliveries();
         await loadMyInventory();
     } catch (error) {
