@@ -163,6 +163,7 @@ function renderProfilePanel(data) {
                             ${p.did
                                 ? `<button type="button" class="profile-chip profile-chip--wide btn-copy-did" title="Kopiraj DID">
                                     <span class="profile-chip-label">${p.did.length > 42 ? p.did.slice(0, 20) + '…' + p.did.slice(-14) : p.did}</span>
+                                    <span class="profile-chip-meta">${p.did.startsWith('did:key:') ? 'did:key' : (p.did.startsWith('did:ebsi:') ? 'did:ebsi' : (p.did.startsWith('did:jwk:') ? 'did:jwk' : 'DID'))}</span>
                                     <span class="profile-chip-action">Kopiraj</span>
                                    </button>`
                                 : '<span class="text-muted">Ni na voljo</span>'}

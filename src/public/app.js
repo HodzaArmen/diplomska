@@ -346,6 +346,12 @@ async function completeRegistration() {
         const waltData = await waltRes.json();
         if (!waltRes.ok) throw new Error(waltData.error);
 
+        if (waltData.did?.startsWith('did:key:')) {
+            updateLoadingStatus(`did:key ustvarjen — ${waltData.did.slice(0, 28)}…`);
+        } else if (waltData.did) {
+            updateLoadingStatus(`Identiteta: ${waltData.did.slice(0, 28)}…`);
+        }
+
         await finalizeAuthenticatedSession({
             sessionId: mmData.sessionId,
             user: waltData.user,

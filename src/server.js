@@ -619,6 +619,131 @@ async function registerWaltIdAccount(userRecord, waltEmail, password) {
     console.log(`[Walt.id] Nov račun: ${waltEmail}`);
 }
 
+/** key (privzeto, eIDAS/OID4VC did:key) ali jwk (legacy) — glej WALT_DID_METHOD v .env */
+function waltDidMethodPreference() {
+    const method = String(process.env.WALT_DID_METHOD || 'key').toLowerCase().trim();
+    return method === 'jwk' ? 'jwk' : 'key';
+}
+
+function assertDidKeyForEudiw(did) {
+    if (waltDidMethodPreference() !== 'key') return;
+    if (!did || !String(did).startsWith('did:key:')) {
+        throw new Error(
+            'Pričakovan did:key za eIDAS/OID4VC profil. Preverite WALT_DID_METHOD=key in Walt.id wallet-api.'
+        );
+    }
+}
+
+function useJwkJcsPubForDidKey() {
+    const raw = String(process.env.WALT_DID_USE_JWK_JCS_PUB ?? 'true').toLowerCase().trim();
+    return raw !== 'false' && raw !== '0' && raw !== 'no';
+}
+
+function extractAllWalletDids(response) {
+    if (!response) return [];
+    if (typeof response === 'string' && response.startsWith('did:')) return [response];
+    const fromList = (items) => (items || [])
+        .map((item) => (typeof item === 'string' ? item : (item?.did || item?.id || null)))
+        .filter(Boolean);
+    if (Array.isArray(response)) return fromList(response);
+    if (response.dids) return fromList(response.dids);
+    const single = extractDidValue(response);
+    return single ? [single] : [];
+}
+
+function findDidWithMethod(dids, methodName) {
+    const prefix = `did:${methodName}:`;
+    return dids.find((did) => String(did).startsWith(prefix)) || null;
+}
+
+async function resolveDefaultJwkDid(walletId, sessionCookie, allDids) {
+    let cookie = sessionCookie;
+    let did = findDidWithMethod(allDids, 'jwk') || allDids[0];
+    if (!did) {
+        const refresh = await callWaltAPI('GET', `/wallet/${walletId}/dids`, null, cookie);
+        cookie = refresh.cookie;
+        const refreshed = extractAllWalletDids(refresh.data);
+        did = findDidWithMethod(refreshed, 'jwk') || refreshed[0] || extractDidValue(refresh.data);
+    }
+    if (!did) {
+        throw new Error('Walt.id DID ni bil najden');
+    }
+    return {
+        did,
+        cookie,
+        didMethod: did.startsWith('did:jwk:') ? 'jwk' : 'other'
+    };
+}
+
+async function resolveWalletDidKey(walletId, sessionCookie, allDids) {
+    let cookie = sessionCookie;
+    let did = findDidWithMethod(allDids, 'key');
+    if (!did) {
+        const params = new URLSearchParams();
+        if (useJwkJcsPubForDidKey()) {
+            params.set('useJwkJcsPub', 'true');
+        }
+        if (process.env.WALT_DID_KEY_ID?.trim()) {
+            params.set('keyId', process.env.WALT_DID_KEY_ID.trim());
+        }
+        if (process.env.WALT_DID_ALIAS?.trim()) {
+            params.set('alias', process.env.WALT_DID_ALIAS.trim());
+        }
+        const qs = params.toString();
+        const profileNote = useJwkJcsPubForDidKey() ? ' (jwk_jcs-pub, OID4VC)' : '';
+        console.log(`[Walt.id] Ustvarjam did:key${profileNote}...`);
+        const createResult = await callWaltAPI(
+            'POST',
+            `/wallet/${walletId}/dids/create/key${qs ? `?${qs}` : ''}`,
+            null,
+            cookie
+        );
+        cookie = createResult.cookie;
+        did = extractDidValue(createResult.data)
+            || findDidWithMethod(extractAllWalletDids(createResult.data), 'key');
+        if (!did) {
+            const refresh = await callWaltAPI('GET', `/wallet/${walletId}/dids`, null, cookie);
+            cookie = refresh.cookie;
+            did = findDidWithMethod(extractAllWalletDids(refresh.data), 'key');
+        }
+        if (!did) {
+            throw new Error('Walt.id ni vrnil did:key po create/key');
+        }
+        console.log(`✓ did:key: ${did.slice(0, 52)}…`);
+    }
+    return {
+        did,
+        cookie,
+        didMethod: 'key',
+        ebsiCompatible: useJwkJcsPubForDidKey()
+    };
+}
+
+/**
+ * Po prijavi v wallet: did:key z useJwkJcsPub (OID4VC / eIDAS-skladen profil) ali did:jwk (legacy).
+ * POST /wallet/{walletId}/dids/create/key?useJwkJcsPub=true
+ */
+async function ensureWalletDid(walletId, sessionCookie, userRecord) {
+    const didsResult = await callWaltAPI('GET', `/wallet/${walletId}/dids`, null, sessionCookie);
+    let cookie = didsResult.cookie;
+    const allDids = extractAllWalletDids(didsResult.data);
+
+    if (waltDidMethodPreference() === 'jwk') {
+        const jwk = await resolveDefaultJwkDid(walletId, cookie, allDids);
+        return { did: jwk.did, walletId, sessionCookie: jwk.cookie, didMethod: jwk.didMethod };
+    }
+
+    const keyDid = await resolveWalletDidKey(walletId, cookie, allDids);
+    assertDidKeyForEudiw(keyDid.did);
+    return {
+        did: keyDid.did,
+        walletId,
+        sessionCookie: keyDid.cookie,
+        didMethod: 'key',
+        oid4vcProfile: keyDid.ebsiCompatible ? 'jwk_jcs-pub' : 'default'
+    };
+}
+
 async function callWaltAPI(method, endpoint, data = null, sessionCookie = null) {
     const config = {
         method,
@@ -731,27 +856,51 @@ async function establishWaltIdSession(userRecord, waltEmail, password, { allowRe
         throw new Error('Walt.id wallet ni bil najden');
     }
 
-    const didsResult = await callWaltAPI('GET', `/wallet/${walletId}/dids`, null, sessionCookie);
-    sessionCookie = didsResult.cookie;
-    const did = extractDidValue(didsResult.data);
-    if (!did) {
-        throw new Error('Walt.id DID ni bil najden');
-    }
+    const didResult = await ensureWalletDid(walletId, sessionCookie, userRecord);
+    sessionCookie = didResult.sessionCookie;
 
-    return { did, walletId, sessionCookie, waltEmail: normalizedWaltEmail };
+    const didMethod = didResult.didMethod || waltDidMethodPreference();
+    return {
+        did: didResult.did,
+        walletId: didResult.walletId,
+        sessionCookie,
+        waltEmail: normalizedWaltEmail,
+        didMethod,
+        oid4vcProfile: didResult.oid4vcProfile || null,
+        identity: buildIdentityProfile(didResult.did, didMethod, didResult.oid4vcProfile)
+    };
+}
+
+/** Metapodatki identitete za UI — did:key + OID4VCI/OID4VP (eIDAS 2.0 smer). */
+function buildIdentityProfile(did, didMethod, oid4vcProfile) {
+    const isDidKey = String(did || '').startsWith('did:key:');
+    return {
+        did,
+        didMethod: didMethod || (isDidKey ? 'key' : 'other'),
+        credentialProtocols: ['OID4VCI', 'OID4VP'],
+        oid4vcProfile: oid4vcProfile || (isDidKey && useJwkJcsPubForDidKey() ? 'jwk_jcs-pub' : null),
+        eudiwAligned: isDidKey,
+        note: isDidKey
+            ? 'did:key ustvarjen ob registraciji — osnova za preverljive poverilnice (EAA) v eIDAS 2.0 ekosistemu'
+            : null
+    };
 }
 
 function formatAuthUserResponse(userRecord, walt = {}) {
     const jazmpApproved = userRecord.role === 'regulator' || Boolean(userRecord.jazmp_approved);
+    const did = walt.did || userRecord.did;
+    const didMethod = walt.didMethod || (String(did || '').startsWith('did:key:') ? 'key' : null);
     return {
         walletAddress: userRecord.wallet_address,
         role: userRecord.role,
         companyName: userRecord.company_name,
         email: userRecord.email,
         waltEmail: walt.waltEmail || userRecord.walt_email || null,
-        did: walt.did || userRecord.did,
+        did,
+        didMethod,
         walletId: walt.walletId || userRecord.wallet_id,
         hasWaltSession: Boolean(walt.sessionCookie || userRecord.walt_api_cookie),
+        identity: walt.identity || buildIdentityProfile(did, didMethod, walt.oid4vcProfile),
         jazmpApproved,
         jazmpApprovedAt: userRecord.jazmp_approved_at || null
     };
@@ -987,13 +1136,16 @@ app.post('/api/auth/register-walt', async (req, res) => {
             return res.status(500).json({ error: 'Uporabnika ni mogoče posodobiti po Walt.id' });
         }
 
-        console.log(`✓ Walt.id OK: ${walt.waltEmail} | DID: ${walt.did?.slice(0, 40)}...`);
+        console.log(`✓ Walt.id OK: ${walt.waltEmail} | DID (${walt.didMethod || 'key'}): ${walt.did?.slice(0, 40)}...`);
 
         res.json({
             success: true,
             message: allowRegister
-                ? 'Registracija v Walt.id uspešna'
+                ? `Registracija uspešna — ustvarjen ${walt.didMethod === 'key' ? 'did:key' : 'DID'}`
                 : 'Walt.id seja osvežena',
+            did: walt.did,
+            didMethod: walt.didMethod,
+            identity: walt.identity,
             user: formatAuthUserResponse(updatedUserRecord, walt),
             needsOnChainRegistration: Boolean(CONTRACT_ADDRESS && updatedUserRecord.did),
             onChainRegistration: {
@@ -3302,6 +3454,9 @@ app.post('/api/auth/login', async (req, res) => {
             success: true,
             message: 'Prijava uspešna',
             sessionId,
+            did: walt.did,
+            didMethod: walt.didMethod,
+            identity: walt.identity,
             user: formatAuthUserResponse(updatedUser, walt),
             needsOnChainRegistration: Boolean(CONTRACT_ADDRESS && updatedUser.did),
             onChainRegistration: {
