@@ -713,6 +713,18 @@ export function decodeVcClaims(jwtOrSdJwt) {
     }
 }
 
+/** JWT id / jti za register odpoklica VC */
+export function extractCredentialId(jwtOrSdJwt) {
+    const jwt = jwtCoreFromCredentialDocument(jwtOrSdJwt);
+    if (!jwt) return null;
+    try {
+        const payload = decodeJwtPayload(jwt);
+        return payload.jti || payload.id || payload.vc?.id || null;
+    } catch {
+        return null;
+    }
+}
+
 function jwtCoreFromCredentialDocument(document) {
     if (!document || typeof document !== 'string') return null;
     const trimmed = document.trim();
@@ -895,6 +907,29 @@ export async function listWalletCredentials(walletId, auth = {}) {
         throw new Error(`wallet credentials list ${response.status}: ${JSON.stringify(response.data)?.slice(0, 200)}`);
     }
     return Array.isArray(response.data) ? response.data : [];
+}
+
+/**
+ * Preveri status VC v walletu (Bitstring Status List / issuer status credential).
+ * V Community Stack brez issuer status liste pogosto vrne "valid" — naš odpoklic je v app + verigi.
+ */
+export async function fetchWalletCredentialStatus(holderUser, credentialId) {
+    const auth = holderWalletAuthFromUser(holderUser);
+    if (!auth?.walletId || !credentialId) return null;
+    try {
+        const response = await axios.get(
+            `${WALLET_API}/wallet/${auth.walletId}/credentials/${encodeURIComponent(credentialId)}/status`,
+            {
+                headers: { ...waltWalletAuthHeaders(auth), Accept: 'application/json' },
+                timeout: 8000,
+                validateStatus: () => true
+            }
+        );
+        if (response.status >= 400) return { checked: false, httpStatus: response.status };
+        return { checked: true, ...response.data };
+    } catch (error) {
+        return { checked: false, error: error.message };
+    }
 }
 
 function credentialJwtFromWalletEntry(entry) {

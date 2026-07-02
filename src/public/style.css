@@ -187,6 +187,20 @@ body > main {
     background: #059669;
 }
 
+.btn-danger {
+    background: #dc2626;
+    color: #fff;
+}
+
+.btn-danger:hover {
+    background: #b91c1c;
+}
+
+.btn-danger:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
 .btn-large {
     padding: 1rem 2rem;
     font-size: 1.1rem;
@@ -910,6 +924,114 @@ body.dashboard-page {
 }
 
 .badge-warning { background: #fef3c7; color: #92400e; }
+.badge-danger { background: #fee2e2; color: #991b1b; }
+
+.badge-revoked {
+    background: #fecaca;
+    color: #7f1d1d;
+    border: 1px solid #f87171;
+    cursor: help;
+    font-weight: 600;
+}
+
+.row-revoked {
+    background: #fef2f2 !important;
+}
+
+.row-revoked td {
+    color: #7f1d1d;
+}
+
+.row-revoked:hover {
+    background: #fee2e2 !important;
+}
+
+.cell-revoked-qty {
+    color: #b91c1c;
+    font-weight: 600;
+    text-decoration: line-through;
+    text-decoration-color: rgba(185, 28, 28, 0.45);
+}
+
+.revoked-stock-label {
+    color: #b91c1c;
+    font-weight: 600;
+    cursor: help;
+}
+
+.revoked-banner {
+    margin: 0 1.25rem 1rem;
+    padding: 0.85rem 1rem;
+    border-radius: 8px;
+    border: 1px solid #fca5a5;
+    background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+    color: #7f1d1d;
+}
+
+.revoked-banner-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1rem;
+}
+
+.revoked-banner-icon {
+    font-size: 1.2rem;
+}
+
+.revoked-banner-reason {
+    margin: 0.5rem 0 0.25rem;
+    font-weight: 600;
+    cursor: help;
+}
+
+.revoked-banner-hint {
+    margin: 0.25rem 0 0;
+    font-size: 0.875rem;
+    color: #991b1b;
+}
+
+.medicine-detail-panel--revoked {
+    border: 2px solid #f87171;
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.15);
+}
+
+.medicine-detail-panel--revoked .detail-header {
+    border-bottom-color: #fecaca;
+}
+
+.detail-revoked-tag {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    background: #dc2626;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 700;
+    vertical-align: middle;
+}
+
+.detail-header-revoked {
+    color: #b91c1c;
+    font-weight: 600;
+    cursor: help;
+}
+
+.text-revoked-inline {
+    color: #b91c1c;
+}
+
+.chain-status-pill--revoked {
+    display: inline-block;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    background: #fecaca;
+    color: #7f1d1d;
+    border: 1px solid #f87171;
+    font-weight: 600;
+    cursor: help;
+}
 .badge-info { background: #dbeafe; color: #1e40af; }
 .badge-success { background: #d1fae5; color: #065f46; }
 .badge-neutral { background: #f1f5f9; color: #475569; }

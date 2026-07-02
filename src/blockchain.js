@@ -53,6 +53,16 @@ const CONTRACT_ABI = [
         type: 'function'
     },
     {
+        inputs: [
+            { internalType: 'string', name: '_medicineId', type: 'string' },
+            { internalType: 'string', name: '_reason', type: 'string' }
+        ],
+        name: 'revokeMedicine',
+        outputs: [],
+        stateMutability: 'nonpayable',
+        type: 'function'
+    },
+    {
         inputs: [{ internalType: 'address', name: '_wallet', type: 'address' }],
         name: 'getUser',
         outputs: [

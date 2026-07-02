@@ -41,9 +41,14 @@ export function buildReceiveGateResult({
     transportVc,
     ipfs,
     chainPath,
+    revocation,
     stage
 }) {
     const reasons = [];
+
+    if (revocation?.revoked) {
+        reasons.push(revocation.message || 'Serija zdravila je odvoljena (odpoklic JAZMP)');
+    }
 
     if (!isStrictVerificationOk(medicineVc)) {
         reasons.push(
@@ -75,6 +80,7 @@ export function buildReceiveGateResult({
     return {
         allowed: credentialOk && !(chainPath?.required && !chainPath.valid),
         counterfeitAlert: !credentialOk,
+        revoked: Boolean(revocation?.revoked),
         chainPending,
         reasons: chainPending
             ? [chainPath.message, ...(chainPath.nextSteps || [])]

@@ -166,16 +166,28 @@ function updateDeliveryMedicineSelect() {
 function updateSendDeliverySectionVisibility() {
     const section = document.getElementById('send-delivery-section');
     if (!section) return;
-    const hasStock = medicines.some((m) => (m.available_quantity ?? 0) > 0);
+    const hasStock = medicines.some((m) => (m.available_quantity ?? 0) > 0 && !isMedicineRevoked(m));
     section.style.display = hasStock ? '' : 'none';
 }
 
 async function fetchMyMedicines() {
-    const response = await fetch(`/api/medicines/my-medicines?sessionId=${encodeURIComponent(currentSessionId)}`);
-    if (!response.ok) throw new Error('Napaka pri nalaganju zdravil');
-    const data = await response.json();
-    medicines = data.medicines || [];
-    return medicines;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+        const response = await fetch(
+            `/api/medicines/my-medicines?sessionId=${encodeURIComponent(currentSessionId)}`,
+            { signal: controller.signal }
+        );
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || `Napaka ${response.status} pri nalaganju zdravil`);
+        }
+        const data = await response.json();
+        medicines = data.medicines || [];
+        return medicines;
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 function attachEventListeners() {
@@ -438,23 +450,32 @@ async function loadMyMedicines() {
                         <th>Skupaj</th>
                         <th>Na zalogi</th>
                         <th>Rok</th>
-                        <th>Zaloga / status</th>
+                        <th>Status</th>
+                        <th>Zaloga</th>
                         <th></th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${medicines.map(m => `
-                        <tr>
+                    ${medicines.map(m => {
+                        const revoked = isMedicineRevoked(m);
+                        const reason = getRevocationReason(m);
+                        const rowClass = revoked ? 'row-revoked' : '';
+                        const stockCell = revoked
+                            ? `<span class="revoked-stock-label" title="${reason ? `Razlog: ${reason}` : 'Odpoklic JAZMP'}">${formatManufacturerStockStatus(m)}</span>`
+                            : (m.stock_status_label || formatManufacturerStockStatus(m));
+                        return `
+                        <tr class="${rowClass}">
                             <td><code class="code-break">${(m.medicine_id || m.medicineId || '').slice(0, 14)}…</code></td>
                             <td>${m.name}</td>
                             <td>${m.batch_number}</td>
                             <td>${m.quantity}</td>
-                            <td>${m.available_quantity ?? m.quantity}</td>
+                            <td>${revoked ? '—' : (m.available_quantity ?? m.quantity)}</td>
                             <td>${m.expiry_date ? formatDisplayDate(m.expiry_date) : '—'}</td>
-                            <td>${m.stock_status_label || formatManufacturerStockStatus(m)}</td>
+                            <td>${renderMedicineStatusCell(m)}</td>
+                            <td>${stockCell}</td>
                             <td><button type="button" class="btn btn-sm btn-details" data-medicine-id="${m.medicine_id || m.medicineId}">Pregled</button></td>
-                        </tr>
-                    `).join('')}
+                        </tr>`;
+                    }).join('')}
                 </tbody>
             </table>
         `;
@@ -470,7 +491,18 @@ async function loadMyMedicines() {
         });
     } catch (error) {
         console.error('Error loading medicines:', error);
+        const listDiv = document.getElementById('medicines-list');
+        if (listDiv) {
+            listDiv.innerHTML = `<p class="error-message">${escapeHtml(error.message || 'Napaka pri nalaganju zdravil')}</p>`;
+        }
     }
+}
+
+function escapeHtml(text) {
+    if (text == null) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
 }
 
 function clearMessages(prefix) {

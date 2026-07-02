@@ -12,7 +12,8 @@ const DELIVERY_STATUS_LABELS = {
 const MEDICINE_CHAIN_STATUS_LABELS = {
     MANUFACTURED: 'Registrirano',
     IN_TRANSIT: 'V dobavni verigi',
-    DELIVERED: 'Dostavljeno v lekarno'
+    DELIVERED: 'Dostavljeno v lekarno',
+    REVOKED: 'Odpoklicano'
 };
 
 function formatDisplayDate(value) {
@@ -53,8 +54,91 @@ function labelMedicineChainStatus(status) {
     return MEDICINE_CHAIN_STATUS_LABELS[status] || status || '—';
 }
 
+function escapeHtmlText(text) {
+    if (text == null) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
+function escapeHtmlAttr(text) {
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+/** Ali je serija odpoklicana */
+function isMedicineRevoked(m) {
+    if (!m) return false;
+    if (m.revoked === true) return true;
+    return m.is_active === false
+        || m.blockchain_status === 'REVOKED'
+        || Boolean(m.revoked_at);
+}
+
+function getRevocationReason(m) {
+    if (!m) return '';
+    return m.revocation?.reason
+        || m.revocation_reason
+        || m.revocationReason
+        || '';
+}
+
+function renderRevokedBadge(reason, opts = {}) {
+    const label = opts.label || 'ODPOKLICANO';
+    const tip = reason
+        ? `Razlog odpoklica: ${reason}`
+        : 'Serija odpoklicana s strani JAZMP (odpoklic)';
+    return `<span class="badge badge-danger badge-revoked" title="${escapeHtmlAttr(tip)}">⛔ ${escapeHtmlText(label)}</span>`;
+}
+
+function renderRevokedBanner(reason, walletStatus) {
+    const tip = reason ? escapeHtmlText(reason) : '';
+    if (walletStatus?.checked) {
+        const ws = walletStatus.credentialStatus || walletStatus.status || walletStatus.valid;
+        const invalid = ws === 'invalid' || ws === 'revoked' || walletStatus.valid === false;
+    }
+    return `<div class="revoked-banner" role="alert">
+        <div class="revoked-banner-head">
+            <span class="revoked-banner-icon" aria-hidden="true">⛔</span>
+            <strong>Serija odpoklicana</strong>
+        </div>
+        ${tip ? `<p class="revoked-banner-reason" title="${escapeHtmlAttr(reason)}">${tip}</p>` : ''}
+        <p class="revoked-banner-hint">Pošiljanje, prevzem in prodaja niso dovoljeni. Poverilnice niso več sprejete v sistemu.</p>
+    </div>`;
+}
+
+function renderMedicineStatusCell(m) {
+    if (isMedicineRevoked(m)) {
+        return renderRevokedBadge(getRevocationReason(m));
+    }
+    const status = m.blockchain_status || m.blockchainStatus || 'MANUFACTURED';
+    return renderStatusBadge(status, 'medicine');
+}
+
+function renderStatusBadge(status, type = 'delivery', tooltip) {
+    const label = type === 'medicine' ? labelMedicineChainStatus(status) : labelDeliveryStatus(status);
+    const cls = {
+        PENDING: 'badge-warning',
+        IN_TRANSIT: 'badge-info',
+        RECEIVED: 'badge-success',
+        DELIVERED: 'badge-success',
+        MANUFACTURED: 'badge-neutral',
+        REVOKED: 'badge-danger badge-revoked'
+    }[status] || 'badge-neutral';
+    const titleAttr = tooltip ? ` title="${escapeHtmlAttr(tooltip)}"` : '';
+    const display = status === 'REVOKED' ? `⛔ ${label}` : label;
+    return `<span class="badge ${cls}"${titleAttr}>${escapeHtmlText(display)}</span>`;
+}
+
 /** Človeški opis zaloge proizvajalca */
 function formatManufacturerStockStatus(m) {
+    if (isMedicineRevoked(m)) {
+        const reason = getRevocationReason(m);
+        return reason ? `Odpoklicano — ${reason}` : 'Odpoklicano';
+    }
     const available = m.available_quantity ?? 0;
     const pending = m.pending_quantity ?? 0;
     const atDist = m.at_distributor_quantity ?? 0;
@@ -73,16 +157,15 @@ function formatManufacturerStockStatus(m) {
     return parts.join(' · ');
 }
 
-function renderStatusBadge(status, type = 'delivery') {
-    const label = type === 'medicine' ? labelMedicineChainStatus(status) : labelDeliveryStatus(status);
-    const cls = {
-        PENDING: 'badge-warning',
-        IN_TRANSIT: 'badge-info',
-        RECEIVED: 'badge-success',
-        DELIVERED: 'badge-success',
-        MANUFACTURED: 'badge-neutral'
-    }[status] || 'badge-neutral';
-    return `<span class="badge ${cls}">${label}</span>`;
+function formatInventoryStockLabel(m) {
+    if (isMedicineRevoked(m)) {
+        const qty = m.available_quantity ?? 0;
+        const reason = getRevocationReason(m);
+        const base = qty > 0 ? `${qty} enot — odpoklicanih` : 'Odpoklicano';
+        return reason ? `${base} (${reason})` : base;
+    }
+    const qty = m.available_quantity ?? 0;
+    return qty > 0 ? `${qty} enot na voljo` : '—';
 }
 
 function renderBlockchainExplorerHtml(medicine) {

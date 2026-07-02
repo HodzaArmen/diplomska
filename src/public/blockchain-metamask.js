@@ -192,6 +192,17 @@ async function recordHandoffOnChain({
     return { ok: true, txHash: receipt.hash, blockNumber: receipt.blockNumber };
 }
 
+async function revokeMedicineOnChain(medicineId, reason) {
+    if (!medicineId || !reason) {
+        throw new Error('Manjka medicineId ali razlog odpoklica');
+    }
+    await getConnectedAccount();
+    const contract = await getContract();
+    const tx = await contract.revokeMedicine(medicineId, reason);
+    const receipt = await tx.wait();
+    return { ok: true, txHash: receipt.hash, blockNumber: receipt.blockNumber };
+}
+
 async function confirmBlockchainTx(sessionId, payload) {
     const res = await fetch('/api/blockchain/confirm', {
         method: 'POST',
@@ -305,6 +316,7 @@ window.BlockchainMetaMask = {
     ensureOnChainUser,
     signMedicineAndConfirm,
     signHandoffAndConfirm,
+    revokeMedicineOnChain,
     resetContractCache,
     isMetaMaskUserRejection,
     META_MASK_REJECTED_MSG

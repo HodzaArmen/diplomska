@@ -37,9 +37,12 @@ async function executeShipmentWithBlockchain({
     } catch {
         throw new Error(raw.includes('Too many') ? 'Preveč zahtev — počakajte in poskusite znova' : raw.slice(0, 200));
     }
-    if (!response.ok) {
-        throw new Error(data.error || 'Napaka pri pošiljanju');
-    }
+        if (!response.ok) {
+            if (response.status === 410 && data.revoked) {
+                throw new Error(data.error || 'Serija je odpoklicana — pošiljanje ni dovoljeno');
+            }
+            throw new Error(data.error || 'Napaka pri pošiljanju');
+        }
 
     const deliveryId = data.delivery?.deliveryId || data.delivery?.delivery_id;
 
@@ -93,6 +96,7 @@ function updateShipmentMedicineSelect(selectEl, medicines, opts = {}) {
 
     medicines
         .filter((m) => {
+            if (typeof isMedicineRevoked === 'function' && isMedicineRevoked(m)) return false;
             const available = parseInt(m[availKey] ?? m.quantity ?? 0, 10);
             return available > 0;
         })

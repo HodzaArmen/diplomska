@@ -55,11 +55,41 @@ CREATE TABLE IF NOT EXISTS medicines (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     ipfs_hash VARCHAR(255),
     blockchain_tx_hash VARCHAR(255),
-    blockchain_status VARCHAR(50), -- 'MANUFACTURED', 'IN_TRANSIT', 'DELIVERED'
+    blockchain_status VARCHAR(50), -- 'MANUFACTURED', 'IN_TRANSIT', 'DELIVERED', 'REVOKED'
     vc_credential TEXT, -- DEPRECATED: VC samo v Walt.id walletu (ne uporabljaj)
+    vc_credential_id VARCHAR(255),
+    revoked_at TIMESTAMP,
+    revoked_by VARCHAR(255),
+    revocation_reason TEXT,
+    revocation_tx_hash VARCHAR(255),
     is_active BOOLEAN DEFAULT TRUE,
     FOREIGN KEY (manufacturer_wallet) REFERENCES users(wallet_address) ON DELETE CASCADE
 );
+
+-- Migracija stolpcev medicines (idempotentno)
+ALTER TABLE medicines ADD COLUMN IF NOT EXISTS vc_credential_id VARCHAR(255);
+ALTER TABLE medicines ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP;
+ALTER TABLE medicines ADD COLUMN IF NOT EXISTS revoked_by VARCHAR(255);
+ALTER TABLE medicines ADD COLUMN IF NOT EXISTS revocation_reason TEXT;
+ALTER TABLE medicines ADD COLUMN IF NOT EXISTS revocation_tx_hash VARCHAR(255);
+
+-- Register odvoljenih VC (audit + preverljivost) — po medicines zaradi FK
+CREATE TABLE IF NOT EXISTS credential_revocations (
+    id SERIAL PRIMARY KEY,
+    medicine_id VARCHAR(255) NOT NULL,
+    credential_id VARCHAR(255) NOT NULL,
+    credential_type VARCHAR(100) DEFAULT 'MedicineCredential',
+    revoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    revoked_by VARCHAR(255) NOT NULL,
+    reason TEXT NOT NULL,
+    revocation_tx_hash VARCHAR(255),
+    UNIQUE (medicine_id, credential_id),
+    FOREIGN KEY (medicine_id) REFERENCES medicines(medicine_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_credential_revocations_medicine ON credential_revocations(medicine_id);
+CREATE INDEX IF NOT EXISTS idx_credential_revocations_credential ON credential_revocations(credential_id);
+CREATE INDEX IF NOT EXISTS idx_medicines_revoked ON medicines(revoked_at) WHERE revoked_at IS NOT NULL;
 
 -- ===== DELIVERIES TABLE =====
 CREATE TABLE IF NOT EXISTS deliveries (

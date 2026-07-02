@@ -57,6 +57,7 @@ contract SupplyChain {
     event UserRegistered(address indexed wallet, string did, string role);
     event MedicineRegistered(string medicineId, address manufacturer, string ipfsHash);
     event StatusUpdated(string medicineId, string status, address holder, string holderDID);
+    event MedicineRevoked(string medicineId, address regulator, string reason, uint256 timestamp);
     event HandoffRecorded(
         string indexed medicineId,
         string deliveryId,
@@ -171,6 +172,44 @@ contract SupplyChain {
             _vcRef
         );
         emit StatusUpdated(_medicineId, _eventType, _newHolder, _newHolderDID);
+    }
+
+    /**
+     * @dev Odpoklic serije — samo regulator (JAZMP). Status = REVOKED, zapis v zgodovino.
+     */
+    function revokeMedicine(string memory _medicineId, string memory _reason) public {
+        require(users[msg.sender].registered, "User must be registered");
+        require(
+            keccak256(bytes(users[msg.sender].role)) == keccak256(bytes("regulator")),
+            "Only regulator"
+        );
+        require(bytes(_medicineId).length > 0, "Medicine ID required");
+        require(bytes(medicines[_medicineId].medicineId).length > 0, "Medicine not found");
+        require(
+            keccak256(bytes(medicines[_medicineId].status)) != keccak256(bytes("REVOKED")),
+            "Already revoked"
+        );
+
+        Medicine storage med = medicines[_medicineId];
+        address previousHolder = med.currentHolder;
+        string memory previousDID = med.currentHolderDID;
+
+        med.status = "REVOKED";
+        med.currentHolder = msg.sender;
+        med.currentHolderDID = users[msg.sender].did;
+
+        medicineHistory[_medicineId].push(Transaction({
+            medicineId: _medicineId,
+            from: previousHolder,
+            fromDID: previousDID,
+            to: msg.sender,
+            toDID: users[msg.sender].did,
+            timestamp: block.timestamp,
+            status: "REVOKED"
+        }));
+
+        emit MedicineRevoked(_medicineId, msg.sender, _reason, block.timestamp);
+        emit StatusUpdated(_medicineId, "REVOKED", msg.sender, users[msg.sender].did);
     }
 
     function updateMedicineStatus(string memory _medicineId, string memory _status) public {

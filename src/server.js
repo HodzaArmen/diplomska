@@ -37,7 +37,8 @@ import {
     canAutoSignForWallet,
     ensureUserRegisteredServer,
     registerMedicineServer,
-    recordHandoffServer
+    recordHandoffServer,
+    revokeMedicineServer
 } from './blockchain-write.js';
 import {
     issueMedicineCredential,
@@ -45,6 +46,8 @@ import {
     verifyCredentialJwt,
     verifyCredentialForReceive,
     resolveHolderCredentialJwt,
+    fetchWalletCredentialStatus,
+    extractCredentialId,
     storeVerifierCallbackResult,
     decodeVcClaims
 } from './waltid-ssi.js';
@@ -54,6 +57,13 @@ import {
     validateChainPathForReceive,
     chainPathNextSteps
 } from './receive-gate.js';
+import {
+    getMedicineRevocationStatus,
+    applyMedicineRevocation,
+    isMedicineRevokedInDb,
+    buildRevocationFailure,
+    MEDICINE_REVOKED_STATUS
+} from './medicine-revocation.js';
 import {
     buildVcAssistantExplanation,
     enhanceExplanationWithAi,
@@ -437,6 +447,17 @@ async function buildMedicineDetailsResponse(medicineId, { viewerWallet, viewerRo
     );
 
     const blockchainReady = Boolean(ensureBlockchainRead());
+    const revocation = await getMedicineRevocationStatus(pool, medicineId, blockchainReady);
+
+    let walletCredentialStatus = null;
+    if (revocation.revoked && medicine.manufacturer_wallet) {
+        const manufacturerUser = await loadUserByWallet(medicine.manufacturer_wallet);
+        const credId = medicine.vc_credential_id;
+        if (manufacturerUser && credId) {
+            walletCredentialStatus = await fetchWalletCredentialStatus(manufacturerUser, credId);
+        }
+    }
+
     const verified = await buildVerifiedMedicineView({
         medicineId,
         dbMedicine: medicine,
@@ -456,6 +477,10 @@ async function buildMedicineDetailsResponse(medicineId, { viewerWallet, viewerRo
 
     return {
         ...verified,
+        revocation,
+        revoked: revocation.revoked,
+        revocationReason: revocation.reason || null,
+        walletCredentialStatus,
         expiryDate: formatDateOnly(verified.expiryDate),
         ipfsLinks: getIpfsLinks(verified.ipfsHash),
         blockchainExplorer
@@ -499,6 +524,17 @@ async function verifyIncomingDeliveryCredentials(medicine, delivery, senderWalle
     const medicineId = medicine.medicine_id || medicine.medicineId;
     const deliveryId = delivery?.delivery_id || delivery?.deliveryId;
 
+    const blockchainReady = Boolean(ensureBlockchainRead());
+    const revocation = await getMedicineRevocationStatus(pool, medicineId, blockchainReady);
+    if (revocation.revoked) {
+        return {
+            medicineVc: buildRevocationFailure('VC zdravila', revocation),
+            transportVc: buildRevocationFailure('VC pošiljke', revocation),
+            ipfs: { accessible: false, message: revocation.message || 'Zdravilo je odpoklicano' },
+            revocation
+        };
+    }
+
     const manufacturerUser = await loadUserByWallet(medicine.manufacturer_wallet);
     const senderUser = await loadUserByWallet(senderWallet);
 
@@ -532,7 +568,7 @@ async function verifyIncomingDeliveryCredentials(medicine, delivery, senderWalle
         ipfs.source = 'ipfs-via-blockchain';
     }
 
-    return { medicineVc, transportVc, ipfs };
+    return { medicineVc, transportVc, ipfs, revocation: revocation.revoked ? revocation : null };
 }
 
 function ensureBlockchainRead() {
@@ -1558,6 +1594,54 @@ app.post('/api/blockchain/confirm', async (req, res) => {
             });
         }
 
+        if (type === 'revoke_medicine') {
+            if (!medicineId) {
+                return res.status(400).json({ error: 'Manjka medicineId' });
+            }
+            if (user.role !== 'regulator') {
+                return res.status(403).json({ error: 'Odpoklic potrdi samo regulator' });
+            }
+            const reason = String(req.body.reason || '').trim();
+            if (!reason) {
+                return res.status(400).json({ error: 'Manjka razlog odpoklica' });
+            }
+            if (ensureBlockchainRead() && !(await isContractDeployed())) {
+                return res.status(503).json({
+                    error: 'Smart contract ni deployan. Zaženite scripts/deploy-anvil.ps1',
+                    contractNotDeployed: true
+                });
+            }
+            const onChain = ensureBlockchainRead()
+                ? await getMedicineFromBlockchain(medicineId)
+                : null;
+            if (ensureBlockchainRead() && onChain?.status !== MEDICINE_REVOKED_STATUS) {
+                return res.status(400).json({
+                    error: 'Transakcija odpoklica še ni vidna na verigi — počakajte in ponovite',
+                    verifyFailed: true
+                });
+            }
+            const medRow = await pool.query('SELECT * FROM medicines WHERE medicine_id = $1', [medicineId]);
+            const medicine = medRow.rows[0];
+            if (!medicine) {
+                return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+            }
+            const credentialIds = [medicine.vc_credential_id].filter(Boolean);
+            await applyMedicineRevocation(pool, {
+                medicineId,
+                revokedBy: user.wallet_address,
+                reason,
+                revocationTxHash: txHash,
+                credentialIds
+            });
+            return res.json({
+                success: true,
+                message: 'Odpoklic serije potrjen na verigi in v bazi',
+                txHash,
+                medicineId,
+                blockchainExplorer: getBlockchainExplorerLinks(txHash)
+            });
+        }
+
         return res.status(400).json({ error: `Neznan tip: ${type}` });
     } catch (error) {
         console.error('Blockchain confirm error:', error.message);
@@ -1708,6 +1792,13 @@ app.post('/api/medicines/create', async (req, res) => {
             vcCredential = { signedJwt: vcJwt, issuerDid: issued.issuerDid, signed: true };
             vcSigned = true;
             console.log(`✓ Medicine VC issued via Walt.id Issuer`);
+            const credentialId = extractCredentialId(vcJwt);
+            if (credentialId) {
+                await client.query(
+                    'UPDATE medicines SET vc_credential_id = $1 WHERE medicine_id = $2',
+                    [credentialId, medicineId]
+                );
+            }
         } catch (vcError) {
             console.error(`✗ Walt.id VC issuance failed: ${vcError.message}`);
             vcCredential = {
@@ -1955,6 +2046,16 @@ app.post('/api/medicines/add-to-delivery', async (req, res) => {
         }
 
         const medicine = medicineResult.rows[0];
+
+        if (isMedicineRevokedInDb(medicine)) {
+            const revocation = await getMedicineRevocationStatus(pool, medicineId, Boolean(ensureBlockchainRead()));
+            return res.status(410).json({
+                error: 'ODPOKLIC — serija je odpoklicana, pošiljanje ni dovoljeno',
+                revoked: true,
+                revocation
+            });
+        }
+
         const available = await getManufacturerAvailableQuantity(medicineId, manufacturer.wallet_address);
 
         if (quantity > available) {
@@ -2151,57 +2252,48 @@ app.get('/api/medicines/my-medicines', async (req, res) => {
              LEFT JOIN deliveries d ON m.medicine_id = d.medicine_id
                 AND d.source_wallet = m.manufacturer_wallet
                 AND d.source_role = 'manufacturer'
-             WHERE m.manufacturer_wallet = $1 AND m.is_active = TRUE
+             WHERE m.manufacturer_wallet = $1
              GROUP BY m.id
-             ORDER BY m.created_at DESC`,
+             ORDER BY m.is_active DESC, m.created_at DESC`,
             [manufacturer.wallet_address]
         );
 
         const chainLive = Boolean(ensureBlockchainRead()) && await isContractDeployed();
-        const medicines = await Promise.all(medicinesResult.rows.map(async (row) => {
+        const medicines = medicinesResult.rows.map((row) => {
             const available = parseInt(row.available_quantity ?? 0, 10);
             const pending = parseInt(row.pending_quantity ?? 0, 10);
             const atDist = parseInt(row.at_distributor_quantity ?? 0, 10);
             const inTransit = parseInt(row.in_transit_to_pharmacy ?? 0, 10);
             const delivered = parseInt(row.delivered_to_pharmacy ?? 0, 10);
             const pendingMeta = parseInt(row.pending_metamask_quantity ?? 0, 10);
-            const parts = [];
-            if (available > 0) parts.push(`${available} na zalogi`);
-            if (pendingMeta > 0) parts.push(`${pendingMeta} čaka MetaMask`);
-            if (pending > pendingMeta) parts.push(`${pending - pendingMeta} čaka prevzem`);
-            else if (pending > 0 && pendingMeta === 0) parts.push(`${pending} čaka prevzem`);
-            if (atDist > 0) parts.push(`${atDist} pri distributorju`);
-            if (inTransit > 0) parts.push(`${inTransit} v dostavi v lekarno`);
-            if (delivered > 0) parts.push(`${delivered} v lekarni`);
+            const revoked = !row.is_active || row.blockchain_status === 'REVOKED' || Boolean(row.revoked_at);
 
-            let onChainRegistered = false;
-            let onChain = null;
-            if (chainLive) {
-                onChain = await getMedicineFromBlockchain(row.medicine_id);
-                onChainRegistered = Boolean(onChain?.medicineId);
-            }
-
-            let vcSigned = false;
-            if (manufacturer.wallet_id && manufacturer.walt_api_cookie) {
-                try {
-                    const jwt = await resolveHolderCredentialJwt(manufacturer, {
-                        credentialType: 'MedicineCredential',
-                        medicineId: row.medicine_id
-                    });
-                    vcSigned = Boolean(jwt);
-                } catch {
-                    vcSigned = false;
-                }
+            let stock_status_label;
+            if (revoked) {
+                stock_status_label = row.revocation_reason
+                    ? `Odpoklicano — ${row.revocation_reason}`
+                    : 'Odpoklicano';
+            } else {
+                const parts = [];
+                if (available > 0) parts.push(`${available} na zalogi`);
+                if (pendingMeta > 0) parts.push(`${pendingMeta} čaka MetaMask`);
+                if (pending > pendingMeta) parts.push(`${pending - pendingMeta} čaka prevzem`);
+                else if (pending > 0 && pendingMeta === 0) parts.push(`${pending} čaka prevzem`);
+                if (atDist > 0) parts.push(`${atDist} pri distributorju`);
+                if (inTransit > 0) parts.push(`${inTransit} v dostavi v lekarno`);
+                if (delivered > 0) parts.push(`${delivered} v lekarni`);
+                stock_status_label = parts.length ? parts.join(' · ') : 'Vse poslano';
             }
 
             return {
                 ...row,
-                on_chain_registered: onChainRegistered,
-                stock_status_label: parts.length ? parts.join(' · ') : 'Vse poslano',
-                ipfsLinks: getIpfsLinks(onChain?.ipfsHash || row.ipfs_hash),
-                vcSigned
+                revoked,
+                on_chain_registered: chainLive ? null : null,
+                stock_status_label,
+                ipfsLinks: getIpfsLinks(row.ipfs_hash),
+                vcSigned: Boolean(row.vc_credential_id)
             };
-        }));
+        });
 
         res.json({
             success: true,
@@ -2442,10 +2534,21 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
         const gate = buildReceiveGateResult({
             ...verification,
             chainPath,
+            revocation: verification.revocation,
             stage: 'distributor'
         });
 
         if (!gate.allowed) {
+            if (gate.revoked) {
+                return res.status(410).json({
+                    error: 'ODPOKLIC — serija zdravila je odvoljena',
+                    revoked: true,
+                    reasons: gate.reasons,
+                    revocation: verification.revocation,
+                    verification,
+                    chainPath
+                });
+            }
             if (gate.chainPending) {
                 return res.status(409).json({
                     error: 'Prevzem še ni mogoč — manjkajo potrditve na verigi',
@@ -2552,6 +2655,7 @@ app.get('/api/distributor/my-inventory', async (req, res) => {
 
         const result = await pool.query(
             `SELECT m.medicine_id, m.name, m.batch_number, m.expiry_date, m.blockchain_status,
+                    m.is_active, m.revoked_at, m.revocation_reason,
                     COALESCE(received.total, 0) - COALESCE(sent.total, 0) AS available_quantity,
                     COALESCE(received.total, 0) AS received_quantity,
                     COALESCE(sent.total, 0) AS forwarded_quantity
@@ -2574,7 +2678,13 @@ app.get('/api/distributor/my-inventory', async (req, res) => {
             [distributorWallet]
         );
 
-        res.json({ success: true, inventory: result.rows });
+        res.json({
+            success: true,
+            inventory: result.rows.map((row) => ({
+                ...row,
+                revoked: !row.is_active || row.blockchain_status === 'REVOKED' || Boolean(row.revoked_at)
+            }))
+        });
     } catch (error) {
         console.error('Get distributor inventory error:', error.message);
         res.status(500).json({ error: error.message });
@@ -2686,6 +2796,11 @@ app.post('/api/pharmacy/verify-medicine', async (req, res) => {
         }
 
         const medicine = medicineResult.rows[0];
+        const revocation = await getMedicineRevocationStatus(
+            pool,
+            medicineId,
+            Boolean(ensureBlockchainRead())
+        );
 
         // Get supply chain history
         const historyResult = await pool.query(
@@ -2722,7 +2837,9 @@ app.post('/api/pharmacy/verify-medicine', async (req, res) => {
                 blockchain: blockchainData,
                 supplyChainHistory: historyResult.rows,
                 ipfsHash: medicine.ipfs_hash,
-                isVerified: medicine.blockchain_status === 'DELIVERED' && medicine.ipfs_hash !== null
+                isVerified: medicine.blockchain_status === 'DELIVERED' && medicine.ipfs_hash !== null && !revocation.revoked,
+                revoked: revocation.revoked,
+                revocation
             }
         });
     } catch (error) {
@@ -2786,6 +2903,17 @@ app.post('/api/distributor/send-to-pharmacy', async (req, res) => {
             [medicineId]
         );
         const medicine = medicineResult.rows[0];
+        if (!medicine) {
+            return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+        }
+        if (isMedicineRevokedInDb(medicine)) {
+            const revocation = await getMedicineRevocationStatus(pool, medicineId, Boolean(ensureBlockchainRead()));
+            return res.status(410).json({
+                error: 'ODPOKLIC — serija je odvoljena, pošiljanje ni dovoljeno',
+                revoked: true,
+                revocation
+            });
+        }
 
         if (!distributor.walt_api_cookie) {
             return res.status(400).json({
@@ -2954,10 +3082,25 @@ app.post('/api/pharmacy/receive-delivery', async (req, res) => {
             transportVc: transportVcVerification,
             ipfs: ipfsVerification,
             chainPath,
+            revocation: verification.revocation,
             stage: 'pharmacy'
         });
 
         if (!gate.allowed) {
+            if (gate.revoked) {
+                return res.status(410).json({
+                    error: 'ODPOKLIC — serija zdravila je odvoljena',
+                    revoked: true,
+                    reasons: gate.reasons,
+                    revocation: verification.revocation,
+                    verification: {
+                        medicineVc: medicineVcVerification,
+                        transportVc: transportVcVerification,
+                        ipfs: ipfsVerification
+                    },
+                    chainPath
+                });
+            }
             if (gate.chainPending) {
                 return res.status(409).json({
                     error: 'Prevzem še ni mogoč — manjkajo potrditve na verigi',
@@ -3204,7 +3347,8 @@ app.get('/api/regulator/medicines', async (req, res) => {
 
         const result = await pool.query(
             `SELECT m.medicine_id, m.name, m.batch_number, m.quantity, m.expiry_date,
-                    m.blockchain_status, m.created_at, u.company_name AS manufacturer_name
+                    m.blockchain_status, m.is_active, m.revoked_at, m.revocation_reason,
+                    m.created_at, u.company_name AS manufacturer_name
              FROM medicines m
              JOIN users u ON m.manufacturer_wallet = u.wallet_address
              ORDER BY m.created_at DESC`
@@ -3248,6 +3392,153 @@ app.get('/api/regulator/pending-users', async (req, res) => {
         });
     } catch (error) {
         console.error('Regulator pending users error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * POST /api/regulator/revoke-medicine — odpoklic serije (JAZMP)
+ * Body: { sessionId, medicineId, reason, txHash? }
+ *
+ * Če je blockchain konfiguriran in txHash manjka → vrne needsBlockchain za MetaMask.
+ * S CHAIN_AUTO_SIGN=true strežnik podpiše revokeMedicine sam.
+ */
+app.post('/api/regulator/revoke-medicine', async (req, res) => {
+    try {
+        const { sessionId, medicineId, reason, txHash } = req.body;
+        const gate = await getRegulatorFromSession(sessionId);
+        if (gate.error) {
+            return res.status(gate.status).json({ error: gate.error });
+        }
+
+        if (!medicineId || !String(reason || '').trim()) {
+            return res.status(400).json({ error: 'Manjkata medicineId in razlog odpoklica' });
+        }
+
+        const medResult = await pool.query('SELECT * FROM medicines WHERE medicine_id = $1', [medicineId]);
+        const medicine = medResult.rows[0];
+        if (!medicine) {
+            return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+        }
+        if (isMedicineRevokedInDb(medicine)) {
+            return res.status(409).json({
+                error: 'Serija je že odpoklicana',
+                revocation: await getMedicineRevocationStatus(pool, medicineId, Boolean(ensureBlockchainRead()))
+            });
+        }
+
+        const regulator = gate.user;
+        const trimmedReason = String(reason).trim().slice(0, 500);
+        const blockchainReady = Boolean(ensureBlockchainRead());
+        let credentialIds = [medicine.vc_credential_id].filter(Boolean);
+
+        const manufacturerUser = await loadUserByWallet(medicine.manufacturer_wallet);
+        if (manufacturerUser) {
+            try {
+                const jwt = await resolveHolderCredentialJwt(manufacturerUser, {
+                    credentialType: 'MedicineCredential',
+                    medicineId
+                });
+                const credId = extractCredentialId(jwt);
+                if (credId) credentialIds.push(credId);
+            } catch {
+                // opcijsko
+            }
+        }
+        credentialIds = [...new Set(credentialIds.filter(Boolean))];
+
+        if (txHash) {
+            if (blockchainReady) {
+                const onChain = await getMedicineFromBlockchain(medicineId);
+                if (onChain?.status !== MEDICINE_REVOKED_STATUS) {
+                    return res.status(400).json({
+                        error: 'Odpoklic na verigi še ni potrjen — počakajte na potrditev TX',
+                        verifyFailed: true
+                    });
+                }
+            }
+            await applyMedicineRevocation(pool, {
+                medicineId,
+                revokedBy: regulator.wallet_address,
+                reason: trimmedReason,
+                revocationTxHash: txHash,
+                credentialIds
+            });
+            return res.json({
+                success: true,
+                message: `Serija ${medicineId} je odpoklicana`,
+                medicineId,
+                txHash,
+                blockchainExplorer: getBlockchainExplorerLinks(txHash)
+            });
+        }
+
+        let chainTxHash = null;
+        if (blockchainReady) {
+            if (!(await isContractDeployed())) {
+                return res.status(503).json({
+                    error: 'Smart contract ni deployan. Zaženite scripts/deploy-anvil.ps1',
+                    contractNotDeployed: true
+                });
+            }
+            if (isChainAutoSignEnabled() && canAutoSignForWallet(regulator.wallet_address)) {
+                await ensureUserRegisteredServer(regulator.wallet_address, regulator.did, regulator.role);
+                const chainResult = await revokeMedicineServer(
+                    regulator.wallet_address,
+                    medicineId,
+                    trimmedReason
+                );
+                if (chainResult?.txHash) {
+                    chainTxHash = chainResult.txHash;
+                }
+            } else {
+                return res.status(202).json({
+                    success: false,
+                    needsBlockchain: true,
+                    message: 'Potrdite odpoklic v MetaMask (revokeMedicine), nato ponovno pošljite zahtevo s txHash',
+                    chainRevoke: { medicineId, reason: trimmedReason },
+                    credentialIds
+                });
+            }
+        }
+
+        await applyMedicineRevocation(pool, {
+            medicineId,
+            revokedBy: regulator.wallet_address,
+            reason: trimmedReason,
+            revocationTxHash: chainTxHash,
+            credentialIds
+        });
+
+        console.log(`✓ JAZMP odpoklic: ${medicineId} — ${trimmedReason}`);
+
+        res.json({
+            success: true,
+            message: `Serija ${medicineId} je odpoklicana`,
+            medicineId,
+            txHash: chainTxHash,
+            blockchainExplorer: chainTxHash ? getBlockchainExplorerLinks(chainTxHash) : null,
+            onChain: Boolean(chainTxHash)
+        });
+    } catch (error) {
+        console.error('Regulator revoke medicine error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/medicines/:medicineId/revocation', async (req, res) => {
+    try {
+        const { medicineId } = req.params;
+        const status = await getMedicineRevocationStatus(
+            pool,
+            medicineId,
+            Boolean(ensureBlockchainRead())
+        );
+        if (status.notFound) {
+            return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+        }
+        res.json({ success: true, ...status });
+    } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
@@ -3563,6 +3854,29 @@ app.get('/api/pharmacy/verify-blockchain', async (req, res) => {
         const medicine = medicineResult.rows[0];
         if (!medicine) {
             return res.status(404).json({ error: 'Zdravilo ni najdeno' });
+        }
+
+        const revocation = await getMedicineRevocationStatus(
+            pool,
+            medicineId,
+            Boolean(ensureBlockchainRead())
+        );
+        if (revocation.revoked) {
+            return res.json({
+                success: true,
+                verified: false,
+                revoked: true,
+                revocation,
+                message: revocation.message || 'Serija je odpoklicana',
+                onChainVerified: revocation.onChainRevoked,
+                systemVerified: false,
+                vcVerification: { verified: false, revoked: true, message: revocation.message },
+                ipfsVerified: Boolean(medicine.ipfs_hash),
+                blockchainConfigured: Boolean(SEPOLIA_RPC_URL && CONTRACT_ADDRESS),
+                hasTxHash: Boolean(medicine.blockchain_tx_hash),
+                dbStatus: medicine.blockchain_status,
+                chainStatus: revocation.onChainStatus || 'REVOKED'
+            });
         }
 
         const manufacturerUser = await loadUserByWallet(medicine.manufacturer_wallet);

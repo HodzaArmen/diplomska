@@ -133,14 +133,25 @@ function dedupeTimeline(timeline) {
     });
 }
 
+function renderChainStatusPill(status, reason) {
+    const isRevoked = String(status || '').toUpperCase() === 'REVOKED';
+    if (isRevoked) {
+        return renderRevokedBadge(reason || 'Serija je odpoklicana na verigi');
+    }
+    return `<span class="chain-status-pill">${escapeHtml(status)}</span>`;
+}
+
 function renderHumanOverview(medicine, highlightDelivery, chainNetwork) {
     const onChain = medicine.onChain?.medicine;
     const owner = medicine.onChain?.currentHolderLabel || onChain?.currentHolder || '—';
-    const status = onChain?.status || medicine.blockchainStatus || '—';
+    const revoked = medicine.revoked || isMedicineRevoked(medicine);
+    const reason = getRevocationReason(medicine) || medicine.revocationReason;
 
     let lead = `Zdravilo <strong>${escapeHtml(medicine.name)}</strong> (serija ${escapeHtml(medicine.batchNumber)}) je proizvedlo <strong>${escapeHtml(medicine.manufacturerName || '—')}</strong>.`;
 
-    if (highlightDelivery) {
+    if (revoked) {
+        lead += ` <strong class="text-revoked-inline">⛔ Serija je odpoklicana</strong>${reason ? ` — ${escapeHtml(reason)}` : ''}.`;
+    } else if (highlightDelivery) {
         lead += ` Pregledujete pošiljko <strong>${highlightDelivery.quantity} en</strong> (${labelDeliveryStatus(highlightDelivery.status)}): ${escapeHtml(highlightDelivery.sourceName || labelRole(highlightDelivery.sourceRole))} → ${escapeHtml(highlightDelivery.targetName || labelRole(highlightDelivery.targetRole))}.`;
     } else if (medicine.journeySummary) {
         lead += ` Pot: <strong>${escapeHtml(medicine.journeySummary)}</strong>.`;
@@ -365,7 +376,7 @@ function renderTechnicalBlock(medicine, chainNetwork) {
             ? detailRow('DID lastnika', `<code class="code-break" title="${escapeHtml(onChain.currentHolderDID)}">${escapeHtml(truncateDid(onChain.currentHolderDID))}</code>`)
             : ''}
         ${onChain?.status
-            ? detailRow('Status na verigi', `<span class="chain-status-pill">${escapeHtml(onChain.status)}</span>`)
+            ? detailRow('Status na verigi', renderChainStatusPill(onChain.status, getRevocationReason(medicine) || medicine.revocationReason))
             : ''}
         ${ex?.contract
             ? detailRow('Pametna pogodba', `<a href="${ex.contract}" target="_blank" rel="noopener" class="link-external">Pogled na verigi ↗</a>`)
@@ -404,6 +415,8 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
     const chainNetwork = medicine.dataSources?.chainNetwork || 'Blockchain';
     const onChain = medicine.onChain?.medicine;
     const chainStatus = onChain?.status || medicine.blockchainStatus || '—';
+    const revoked = medicine.revoked || isMedicineRevoked(medicine);
+    const revocationReason = getRevocationReason(medicine) || medicine.revocationReason || medicine.revocation?.reason;
 
     const overviewFacts = `
         <div class="detail-facts-grid">
@@ -412,7 +425,9 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
             ${detailRow('Rok uporabe', formatDisplayDate(medicine.expiryDate))}
             ${detailRow('Zaloga / količina', escapeHtml(stockText))}
             ${onChain ? detailRow('Lastnik', escapeHtml(medicine.onChain?.currentHolderLabel || onChain.currentHolder || '—')) : ''}
-            ${onChain ? detailRow('Status', `<span class="chain-status-pill">${escapeHtml(chainStatus)}</span>`) : ''}
+            ${onChain || revoked ? detailRow('Status', revoked
+                ? renderRevokedBadge(revocationReason)
+                : renderChainStatusPill(chainStatus)) : ''}
         </div>`;
 
     const deliveriesHtml = deliveries.length === 0
@@ -424,14 +439,17 @@ function displayMedicineDetailPanel(containerId, medicine, opts = {}) {
             </div>`).join('');
 
     el.innerHTML = `
-        <div class="medicine-detail-panel dashboard-card">
+        <div class="medicine-detail-panel dashboard-card${revoked ? ' medicine-detail-panel--revoked' : ''}">
             <header class="detail-header">
                 <div>
-                    <h3>${escapeHtml(medicine.name)}</h3>
-                    <p class="detail-header-sub">Serija ${escapeHtml(medicine.batchNumber)} · ${escapeHtml(stockText)}</p>
+                    <h3>${escapeHtml(medicine.name)}${revoked ? ' <span class="detail-revoked-tag">ODPOKLICANO</span>' : ''}</h3>
+                    <p class="detail-header-sub">${revoked
+                        ? `<span class="detail-header-revoked" title="${escapeHtml(revocationReason || 'Odpoklic JAZMP')}">⛔ Odpoklic serije${revocationReason ? ` — ${escapeHtml(revocationReason)}` : ''}</span>`
+                        : `Serija ${escapeHtml(medicine.batchNumber)} · ${escapeHtml(stockText)}`}</p>
                 </div>
                 <button type="button" class="btn btn-ghost btn-close-detail" aria-label="Zapri">✕</button>
             </header>
+            ${revoked ? renderRevokedBanner(revocationReason, medicine.walletCredentialStatus) : ''}
 
             <nav class="detail-tabs" role="tablist" aria-label="Pregled zdravila">
                 <button type="button" class="detail-tab detail-tab--active" data-tab="overview" role="tab" aria-selected="true">Pregled</button>

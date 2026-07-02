@@ -125,7 +125,7 @@ function updateForwardMedicineSelect() {
 function updateForwardSendSectionVisibility() {
     const section = document.getElementById('forward-send-section');
     if (!section) return;
-    const hasStock = myInventory.some((m) => (m.available_quantity ?? 0) > 0);
+    const hasStock = myInventory.some((m) => (m.available_quantity ?? 0) > 0 && !isMedicineRevoked(m));
     section.style.display = hasStock ? '' : 'none';
 }
 
@@ -279,22 +279,29 @@ async function loadMyInventory() {
                         <th>Serijska</th>
                         <th>Na voljo</th>
                         <th>Rok</th>
+                        <th>Status</th>
                         <th>Akcija</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${myInventory.map(m => `
-                        <tr>
+                    ${myInventory.map(m => {
+                        const revoked = isMedicineRevoked(m);
+                        const reason = getRevocationReason(m);
+                        return `
+                        <tr class="${revoked ? 'row-revoked' : ''}">
                             <td>${escapeHtml(m.name)}</td>
                             <td>${escapeHtml(m.batch_number)}</td>
-                            <td>${m.available_quantity} enot</td>
+                            <td class="${revoked ? 'cell-revoked-qty' : ''}" title="${revoked && reason ? `Razlog odpoklica: ${reason}` : ''}">${m.available_quantity} enot</td>
                             <td>${formatDisplayDate(m.expiry_date)}</td>
+                            <td>${renderMedicineStatusCell(m)}</td>
                             <td>
                                 <button type="button" class="btn btn-sm btn-details" data-medicine-id="${escapeHtml(m.medicine_id)}">Pregled</button>
-                                <button type="button" class="btn btn-sm btn-forward" data-medicine-id="${escapeHtml(m.medicine_id)}">Pošlji</button>
+                                ${revoked
+                                    ? `<span class="badge badge-danger badge-revoked" title="${reason ? `Razlog: ${reason}` : 'Odpoklic JAZMP'}">Pošiljanje blokirano</span>`
+                                    : `<button type="button" class="btn btn-sm btn-forward" data-medicine-id="${escapeHtml(m.medicine_id)}">Pošlji</button>`}
                             </td>
-                        </tr>
-                    `).join('')}
+                        </tr>`;
+                    }).join('')}
                 </tbody>
             </table>
         `;

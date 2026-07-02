@@ -108,3 +108,16 @@ export async function recordHandoffServer(walletAddress, payload) {
     const receipt = await tx.wait();
     return { ok: true, txHash: receipt.hash };
 }
+
+export async function revokeMedicineServer(walletAddress, medicineId, reason) {
+    if (!canAutoSignForWallet(walletAddress)) {
+        return { skipped: true };
+    }
+    if (!(await isContractDeployed())) {
+        throw new Error('Smart contract ni deployan — zaženite scripts/deploy-anvil.ps1');
+    }
+    const { contract } = await getWriteContract(walletAddress);
+    const tx = await contract.revokeMedicine(medicineId, reason);
+    const receipt = await tx.wait();
+    return { ok: true, txHash: receipt.hash };
+}
