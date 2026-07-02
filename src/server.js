@@ -878,6 +878,7 @@ function buildIdentityProfile(did, didMethod, oid4vcProfile) {
         did,
         didMethod: didMethod || (isDidKey ? 'key' : 'other'),
         credentialProtocols: ['OID4VCI', 'OID4VP'],
+        credentialFormat: process.env.WALT_CREDENTIAL_FORMAT || 'vc+sd-jwt',
         oid4vcProfile: oid4vcProfile || (isDidKey && useJwkJcsPubForDidKey() ? 'jwk_jcs-pub' : null),
         eudiwAligned: isDidKey,
         note: isDidKey

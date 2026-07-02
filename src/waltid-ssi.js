@@ -11,6 +11,22 @@ const ISSUER_API = (process.env.WALT_ISSUER_API_URL || 'http://issuer-api:7002')
 const VERIFIER_API = (process.env.WALT_VERIFIER_API_URL || 'http://verifier-api:7003').replace(/\/$/, '');
 const WALLET_API = (process.env.WALT_ID_API_URL || 'http://wallet-api:7001/wallet-api').replace(/\/$/, '');
 
+/** vc+sd-jwt (EUDI / eIDAS 2.0 smer) ali jwt_vc_json (legacy W3C) */
+function usesSdJwtCredentialFormat() {
+    const fmt = String(process.env.WALT_CREDENTIAL_FORMAT || 'vc+sd-jwt').toLowerCase().trim();
+    return fmt !== 'jwt_vc_json';
+}
+
+function credentialConfigurationId(baseType) {
+    return usesSdJwtCredentialFormat()
+        ? `${baseType}_vc+sd-jwt`
+        : `${baseType}_jwt_vc_json`;
+}
+
+function oid4vcCredentialFormat() {
+    return usesSdJwtCredentialFormat() ? 'vc+sd-jwt' : 'jwt_vc_json';
+}
+
 let cachedIssuerKey = null;
 
 function rewriteLocalServiceUrl(vhodniNiz) {
@@ -278,8 +294,9 @@ async function claimCredentialFromOffer(offer, credentialConfigurationId, { issu
         cNonce
     });
 
+    const format = oid4vcCredentialFormat();
     const credentialRequest = {
-        format: 'jwt_vc_json',
+        format,
         credential_configuration_id: credentialConfigurationId,
         proof: { proof_type: 'jwt', jwt: proofJwt }
     };
@@ -301,7 +318,7 @@ async function claimCredentialFromOffer(offer, credentialConfigurationId, { issu
         || credentialResponse.data?.credentials?.[0]?.credential
         || (typeof credentialResponse.data === 'string' ? credentialResponse.data : null);
 
-    if (typeof jwt === 'string' && jwt.includes('.')) {
+    if (typeof jwt === 'string' && (jwt.includes('.') || jwt.includes('~'))) {
         return jwt;
     }
 
@@ -422,8 +439,22 @@ async function claimCredentialViaWallet(offerRaw, walletId, waltCookie) {
     return document;
 }
 
+function buildSelectiveDisclosure(credentialData = {}) {
+    const sdFields = ['description', 'creatorWallet', 'creatorName', 'senderWallet', 'recipientWallet'];
+    const fields = {};
+    for (const key of sdFields) {
+        if (Object.prototype.hasOwnProperty.call(credentialData, key)) {
+            fields[key] = { sd: true };
+        }
+    }
+    return { fields, decoyMode: 'NONE', decoys: 0 };
+}
+
 /**
- * Issue a signed JWT VC via Walt.id Issuer API (OID4VCI pre-authorized flow)
+ * Izdaj podpisano poverilnico (OID4VCI) in jo shrani v wallet uporabnika.
+ *
+ * Privzeto: issuer-api/openid4vc/sdjwt/issue (SD-JWT VC, eIDAS/EUDI smer)
+ * Legacy:   issuer-api/openid4vc/jwt/issue (W3C jwt_vc_json)
  */
 export async function issueSignedCredential({
     credentialConfigurationId,
@@ -431,28 +462,49 @@ export async function issueSignedCredential({
     mapping,
     subjectDid,
     walletId = null,
-    waltCookie = null
+    waltCookie = null,
+    selectiveDisclosure = null
 }) {
     const { issuerKey, issuerDid } = await getIssuerSigningMaterial();
+    const useSdJwt = usesSdJwtCredentialFormat();
 
-    const issueBody = {
-        issuerKey,
-        issuerDid,
-        credentialConfigurationId,
-        credentialData,
-        mapping: mapping || {
-            id: '<uuid>',
-            issuer: { id: '<issuerDid>' },
-            credentialSubject: { id: subjectDid || '<uuid>' },
-            issuanceDate: '<timestamp>',
-            expirationDate: '<timestamp-in:365d>'
-        },
-        authenticationMethod: 'PRE_AUTHORIZED',
-        standardVersion: 'DRAFT13'
-    };
+    const issueBody = useSdJwt
+        ? {
+            issuerKey,
+            issuerDid,
+            credentialConfigurationId,
+            credentialData,
+            mapping: mapping || {
+                id: '<uuid>',
+                sub: subjectDid || '<subjectDid>',
+                iat: '<timestamp-seconds>',
+                nbf: '<timestamp-seconds>',
+                exp: '<timestamp-in-seconds:365d>'
+            },
+            selectiveDisclosure: selectiveDisclosure || buildSelectiveDisclosure(credentialData),
+            authenticationMethod: 'PRE_AUTHORIZED'
+        }
+        : {
+            issuerKey,
+            issuerDid,
+            credentialConfigurationId,
+            credentialData,
+            mapping: mapping || {
+                id: '<uuid>',
+                issuer: { id: '<issuerDid>' },
+                credentialSubject: { id: subjectDid || '<uuid>' },
+                issuanceDate: '<timestamp>',
+                expirationDate: '<timestamp-in:365d>'
+            },
+            authenticationMethod: 'PRE_AUTHORIZED',
+            standardVersion: 'DRAFT13'
+        };
+
+    const issuePath = useSdJwt ? '/openid4vc/sdjwt/issue' : '/openid4vc/jwt/issue';
+    console.log(`[OID4VCI] Izdaja ${credentialConfigurationId} prek ${issuePath}`);
 
     const issueResponse = await axios.post(
-        `${ISSUER_API}/openid4vc/jwt/issue`,
+        `${ISSUER_API}${issuePath}`,
         issueBody,
         {
             headers: { 'Content-Type': 'application/json', Accept: 'text/plain, application/json' },
@@ -492,19 +544,22 @@ export async function issueSignedCredential({
         jwt,
         issuerDid,
         credentialOffer: offer,
-        signed: true
+        signed: true,
+        format: oid4vcCredentialFormat()
     };
 }
 
+/**
+ * Izdaj MedicineCredential ob ustvarjanju zdravila (SD-JWT EAA ali W3C JWT).
+ */
 export async function issueMedicineCredential(medicine, manufacturer, walletOpts = {}) {
     const now = new Date().toISOString();
-    const credentialData = {
-        '@context': ['https://www.w3.org/2018/credentials/v1'],
-        type: ['VerifiableCredential', 'MedicineCredential'],
-        issuer: { id: manufacturer.did },
-        issuanceDate: now,
-        credentialSubject: {
-            id: manufacturer.did,
+    const useSdJwt = usesSdJwtCredentialFormat();
+
+    const credentialData = useSdJwt
+        ? {
+            sub: manufacturer.did,
+            credential_type: 'MedicineCredential',
             eventType: 'MANUFACTURED',
             eventTimestamp: now,
             medicineId: medicine.medicineId,
@@ -520,14 +575,35 @@ export async function issueMedicineCredential(medicine, manufacturer, walletOpts
             manufacturerDID: manufacturer.did,
             description: medicine.description || ''
         }
-    };
+        : {
+            '@context': ['https://www.w3.org/2018/credentials/v1'],
+            type: ['VerifiableCredential', 'MedicineCredential'],
+            issuer: { id: manufacturer.did },
+            issuanceDate: now,
+            credentialSubject: {
+                id: manufacturer.did,
+                eventType: 'MANUFACTURED',
+                eventTimestamp: now,
+                medicineId: medicine.medicineId,
+                name: medicine.name,
+                batchNumber: medicine.batchNumber,
+                quantity: medicine.quantity,
+                expiryDate: medicine.expiryDate,
+                creatorRole: 'manufacturer',
+                creatorName: manufacturer.companyName || manufacturer.company_name,
+                creatorWallet: manufacturer.wallet_address,
+                creatorDID: manufacturer.did,
+                manufacturer: manufacturer.companyName || manufacturer.company_name,
+                manufacturerDID: manufacturer.did,
+                description: medicine.description || ''
+            }
+        };
 
-    // POPRAVLJENO: Bolj robustna podpora za camelCase in snake_case poimenovanja wallet podatkov
     const walletId = walletOpts.walletId || manufacturer.wallet_id || manufacturer.walletId || null;
     const waltCookie = walletOpts.waltCookie || manufacturer.walt_api_cookie || manufacturer.waltCookie || null;
 
     return issueSignedCredential({
-        credentialConfigurationId: 'MedicineCredential_jwt_vc_json',
+        credentialConfigurationId: credentialConfigurationId('MedicineCredential'),
         credentialData,
         subjectDid: manufacturer.did,
         walletId,
@@ -550,14 +626,12 @@ export async function issueHandoffCredential({
     const now = new Date().toISOString();
     const medicineId = medicine.medicine_id || medicine.medicineId;
     const deliveryId = delivery.delivery_id || delivery.deliveryId;
+    const useSdJwt = usesSdJwtCredentialFormat();
 
-    const credentialData = {
-        '@context': ['https://www.w3.org/2018/credentials/v1'],
-        type: ['VerifiableCredential', 'MedicineTransportCredential'],
-        issuer: { id: sender.did },
-        issuanceDate: now,
-        credentialSubject: {
-            id: sender.did,
+    const credentialData = useSdJwt
+        ? {
+            sub: sender.did,
+            credential_type: 'MedicineTransportCredential',
             eventType,
             eventTimestamp: now,
             medicineId,
@@ -574,13 +648,36 @@ export async function issueHandoffCredential({
             recipientWallet: recipient.wallet_address,
             recipientDID: recipient.did || null
         }
-    };
+        : {
+            '@context': ['https://www.w3.org/2018/credentials/v1'],
+            type: ['VerifiableCredential', 'MedicineTransportCredential'],
+            issuer: { id: sender.did },
+            issuanceDate: now,
+            credentialSubject: {
+                id: sender.did,
+                eventType,
+                eventTimestamp: now,
+                medicineId,
+                medicineName: medicine.name,
+                batchNumber: medicine.batch_number || medicine.batchNumber,
+                deliveryId,
+                quantity: delivery.quantity,
+                senderRole: sender.role,
+                senderName: sender.company_name || sender.companyName,
+                senderWallet: sender.wallet_address,
+                senderDID: sender.did,
+                recipientRole: recipient.role,
+                recipientName: recipient.company_name || recipient.companyName || recipient.target_pharmacy_name,
+                recipientWallet: recipient.wallet_address,
+                recipientDID: recipient.did || null
+            }
+        };
 
     const walletId = walletOpts.walletId || sender.wallet_id || sender.walletId || null;
     const waltCookie = walletOpts.waltCookie || sender.walt_api_cookie || sender.waltCookie || null;
 
     return issueSignedCredential({
-        credentialConfigurationId: 'MedicineTransportCredential_jwt_vc_json',
+        credentialConfigurationId: credentialConfigurationId('MedicineTransportCredential'),
         credentialData,
         subjectDid: sender.did,
         walletId,
@@ -600,19 +697,36 @@ export async function issueTransportCredential(delivery, distributor, medicine, 
     });
 }
 
-export function decodeVcClaims(jwt) {
-    if (!jwt || typeof jwt !== 'string' || !jwt.includes('.')) return null;
+export function decodeVcClaims(jwtOrSdJwt) {
+    const jwt = jwtCoreFromCredentialDocument(jwtOrSdJwt);
+    if (!jwt) return null;
     try {
         const payload = decodeJwtPayload(jwt);
         const vc = payload.vc || payload;
-        return vc.credentialSubject || payload.credentialSubject || null;
+        if (vc?.credentialSubject) return vc.credentialSubject;
+        if (payload.credentialSubject) return payload.credentialSubject;
+        // SD-JWT VC — ravni claims v payloadu
+        const { iss, sub, iat, exp, nbf, jti, vct, cnf, ...claims } = payload;
+        return { id: sub, sub, ...claims };
     } catch {
         return null;
     }
 }
 
+function jwtCoreFromCredentialDocument(document) {
+    if (!document || typeof document !== 'string') return null;
+    const trimmed = document.trim();
+    if (trimmed.includes('~') && trimmed.startsWith('eyJ')) {
+        return trimmed.split('~')[0];
+    }
+    if (trimmed.includes('.')) return trimmed;
+    return null;
+}
+
 function decodeJwtPayload(jwt) {
-    const parts = jwt.split('.');
+    const core = jwtCoreFromCredentialDocument(jwt);
+    if (!core) throw new Error('Neveljaven JWT format');
+    const parts = core.split('.');
     if (parts.length !== 3) {
         throw new Error('Neveljaven JWT format');
     }
@@ -620,24 +734,29 @@ function decodeJwtPayload(jwt) {
     return JSON.parse(payload);
 }
 
-function extractVcParties(jwt) {
-    const payload = decodeJwtPayload(jwt);
+function extractVcParties(jwtOrSdJwt) {
+    const payload = decodeJwtPayload(jwtOrSdJwt);
     const vc = payload.vc || payload;
+    const flatSubject = payload.sub
+        ? { id: payload.sub, sub: payload.sub, ...payload }
+        : null;
     return {
         payload,
         vc,
         issuer: vc?.issuer?.id || payload.iss,
-        subject: vc?.credentialSubject || payload.credentialSubject
+        subject: vc?.credentialSubject || payload.credentialSubject || flatSubject
     };
 }
 
 function matchesExpectedIssuer({ issuer, subject }, expectedIssuerDid) {
     if (!expectedIssuerDid) return true;
+    const subjectId = typeof subject === 'string' ? subject : subject?.id;
     return issuer === expectedIssuerDid ||
-        subject?.id === expectedIssuerDid ||
+        subjectId === expectedIssuerDid ||
         subject?.manufacturerDID === expectedIssuerDid ||
-        subject?.distributorDID === expectedIssuerDid ||
-        subject?.creatorDID === expectedIssuerDid;
+        subject?.creatorDID === expectedIssuerDid ||
+        subject?.senderDID === expectedIssuerDid ||
+        subject?.distributorDID === expectedIssuerDid;
 }
 
 function structuralVerify(jwt, expectedIssuerDid) {
@@ -660,13 +779,20 @@ const SUPPORTED_CREDENTIAL_TYPES = new Set([
     'MedicineTransportCredential'
 ]);
 
-function getCredentialTypeFromJwt(jwt) {
-    const payload = decodeJwtPayload(jwt);
+function getCredentialTypeFromJwt(jwtOrSdJwt) {
+    const payload = decodeJwtPayload(jwtOrSdJwt);
+    if (payload.credential_type && SUPPORTED_CREDENTIAL_TYPES.has(payload.credential_type)) {
+        return payload.credential_type;
+    }
+    const vct = String(payload.vct || '');
+    if (vct.includes('medicine-transport')) return 'MedicineTransportCredential';
+    if (vct.includes('medicine-credential')) return 'MedicineCredential';
     const vc = payload.vc || payload;
     const types = Array.isArray(vc?.type) ? vc.type : [];
     const specific = types.find((type) => SUPPORTED_CREDENTIAL_TYPES.has(type));
     if (specific) return specific;
-    if (jwt.includes('MedicineTransportCredential')) return 'MedicineTransportCredential';
+    const raw = String(jwtOrSdJwt || '');
+    if (raw.includes('MedicineTransportCredential')) return 'MedicineTransportCredential';
     return 'MedicineCredential';
 }
 
@@ -693,6 +819,10 @@ function buildPresentationSubmission(presentationDefinition) {
         throw new Error('Presentation definition nima input descriptorja');
     }
 
+    const vcFormat = oid4vcCredentialFormat();
+    const nestedFormat = vcFormat === 'vc+sd-jwt' ? 'vc+sd-jwt' : 'jwt_vc_json';
+    const nestedPath = vcFormat === 'vc+sd-jwt' ? '$' : '$.verifiableCredential[0]';
+
     return {
         id: definitionId,
         definition_id: definitionId,
@@ -702,8 +832,8 @@ function buildPresentationSubmission(presentationDefinition) {
             path: '$',
             path_nested: {
                 id: descriptorId,
-                format: 'jwt_vc_json',
-                path: '$.verifiableCredential[0]'
+                format: nestedFormat,
+                path: nestedPath
             }
         }]
     };
@@ -769,10 +899,20 @@ export async function listWalletCredentials(walletId, auth = {}) {
 
 function credentialJwtFromWalletEntry(entry) {
     const doc = entry?.document || entry?.credential || entry?.parsedDocument;
-    return (typeof doc === 'string' && doc.includes('.')) ? doc : null;
+    if (typeof doc === 'string') {
+        return jwtCoreFromCredentialDocument(doc) || (doc.includes('.') ? doc : null);
+    }
+    return null;
 }
 
-/** Filtriraj wallet credential po claims (medicineId, deliveryId, eventType). */
+/** Celoten SD-JWT VC dokument (z disclosures) za predstavitev. */
+function credentialDocumentFromWalletEntry(entry) {
+    const doc = entry?.document || entry?.credential;
+    if (typeof doc !== 'string') return null;
+    if (doc.includes('~') || doc.includes('.')) return doc;
+    return null;
+}
+
 export function matchesCredentialFilters(entry, {
     credentialType = null,
     medicineId = null,
@@ -830,11 +970,12 @@ export async function verifyCredentialPresentationFromHolder({
 
 async function initOid4vpVerificationSession(credentialType, options = {}) {
     const { statusCallbackUri, authorizeBaseUrl, walletId } = options;
+    const format = oid4vcCredentialFormat();
     const body = {
         request_credentials: [
             {
                 type: credentialType,
-                format: 'jwt_vc_json'
+                format
             }
         ]
     };
@@ -1059,8 +1200,10 @@ export async function verifyCredentialJwt(jwt, expectedIssuerDid = null, options
     const { strict = false, statusCallbackUri = process.env.VERIFIER_STATUS_CALLBACK_URL || null } = options;
 
     if (!jwt || typeof jwt !== 'string') {
-        return { verified: false, message: 'Manjka JWT credential', structuralOnly: false };
+        return { verified: false, message: 'Manjka credential dokument', structuralOnly: false };
     }
+
+    const presentationToken = jwt;
 
     try {
         const credentialType = getCredentialTypeFromJwt(jwt);
@@ -1068,7 +1211,7 @@ export async function verifyCredentialJwt(jwt, expectedIssuerDid = null, options
         await submitOid4vpPresentation({
             responseUri: session.responseUri,
             state: session.state,
-            jwt,
+            jwt: presentationToken,
             presentationDefinition: session.presentationDefinition
         });
 
