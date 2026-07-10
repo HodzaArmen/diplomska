@@ -2627,7 +2627,7 @@ app.post('/api/distributor/receive-delivery', async (req, res) => {
             message: chainHandoff.autoSigned
                 ? 'Pošiljka sprejeta — VC in veriga preverjena'
                 : (chainHandoff.needsBlockchain
-                    ? 'Pošiljka sprejeta — potrdite handoff v MetaMask'
+                    ? 'Pošiljka sprejeta'
                     : 'Pošiljka sprejeta — VC in veriga preverjena'),
             verification,
             chainPath,

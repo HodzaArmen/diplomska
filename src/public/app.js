@@ -102,9 +102,9 @@ function showAuthForm(options = {}) {
 
     const registerBtn = document.getElementById('btn-register-complete');
     if (registerBtn && isPendingOnChainRegistration()) {
-        registerBtn.textContent = '✓ Potrdi v MetaMask';
+        registerBtn.textContent = 'Potrdi v MetaMask';
     } else if (registerBtn) {
-        registerBtn.textContent = '✓ Registracija';
+        registerBtn.textContent = 'Registracija';
     }
 }
 

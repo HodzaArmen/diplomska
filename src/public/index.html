@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sistem za Sledljivost Zdravil - SSI</title>
+    <title>Sistem za sledljivost zdravil - SSI</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <nav class="navbar">
         <div class="navbar-container">
-            <h1 class="navbar-title">🏥 Sistem za Sledljivost Zdravil</h1>
+            <h1 class="navbar-title">Sistem za sledljivost zdravil</h1>
             <div class="navbar-right">
                 <span id="wallet-status" class="wallet-status">Wallet: Ni povezan</span>
                 <button id="btn-logout" class="btn-logout" style="display:none;">Odjava</button>
@@ -42,7 +42,6 @@
                 </div>
 
                 <div id="phase-1" class="registration-phase active">
-                    <h3>Korak 1: Povežite MetaMask</h3>
                     <button id="btn-connect-metamask" class="btn btn-primary btn-large">
                         Povežite MetaMask denarnico
                     </button>
@@ -70,9 +69,6 @@
                 </div>
 
                 <div id="phase-2-register" class="registration-phase" style="display:none;">
-                    <h3>Korak 2: Registracija</h3>
-                    <p class="phase-description">Izpolnite podatke podjetja in ustvarite Walt.id račun (email + geslo).</p>
-
                     <div class="form-group">
                         <label for="role-select">Vloga: <span class="required">*</span></label>
                         <select id="role-select" class="form-control">
@@ -106,7 +102,7 @@
                     </div>
 
                     <button id="btn-register-complete" class="btn btn-primary btn-large">
-                        ✓ Registracija
+                        Registracija
                     </button>
                     <p id="registration-error" class="error-message" style="display:none;"></p>
                 </div>

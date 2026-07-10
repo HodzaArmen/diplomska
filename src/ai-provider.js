@@ -10,7 +10,7 @@ import axios from 'axios';
 const PROVIDERS = {
     groq: {
         id: 'groq',
-        label: 'Groq (brezplačno)',
+        label: 'Groq',
         keyEnv: 'GROQ_API_KEY',
         modelEnv: 'GROQ_MODEL',
         defaultModel: 'llama-3.3-70b-versatile',
